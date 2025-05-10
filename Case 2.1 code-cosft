@@ -1,0 +1,589 @@
+########## Real data analysis - code 1 - cosft addessing ###########
+#######<><><><><><><> Last Change: 2025.2.6 11:17
+#####################################################
+
+rm(list=ls())
+set.seed(123)
+eps <- 1e-6
+options(digits = 3)
+
+library(ggplot2)
+library(quadprog)
+library(RSpectra)
+library(kernlab)
+library(nloptr)
+library(kernlab)
+library(Matrix)
+library(matrixcalc)
+library(dplyr)
+library(gridExtra) 
+library(patchwork)
+library(pROC)
+library(ks)      
+library(MASS)  
+library(e1071)  
+library(caret)   
+library(rpart)       
+library(randomForest) 
+library(glmnet)
+#library(tidyverse)  
+
+sepsis_edit0 <- read.csv("sepsis_edit0.csv")
+#View(sepsis_edit0)
+normalize <- function(x) {
+  return((x - min(x)) / (max(x) - min(x)))
+}
+colnum <- ncol(sepsis_edit0)
+sepsis_edit0[,c(12:colnum)] <- as.data.frame(lapply(sepsis_edit0[,c(12:colnum)], normalize))
+# View(sepsis_edit0[,c(1,12:31)])
+# M <- cor(sepsis_edit0[,c(1,12:31)])
+# M1 <- M[order(abs(M[,1]),decreasing=TRUE),]
+# View(M1)
+# b
+# corrplot(M, type = "upper",tl.cex=0.5)
+## pc18    pc1    pc4    pc3 
+## -0.182 -0.169 -0.156 -0.151 
+# View(sepsis_edit0)
+set.seed(123)
+# dim(sepsis_edit0)
+#View(sepsis_edit0)
+##<><><><><><><><><>><><>
+Ks_total <- seq(0,2,length.out=3)
+Ks <- 3
+rownum <- dim(sepsis_edit0)[1]
+colnum <- dim(sepsis_edit0)[2]
+Phi <- rep(0,rownum)
+# first_hosp_stay1 <- rep(0,rownum)
+# first_hosp_stay2 <- rep(0,rownum)
+# sex <- rep(0,rownum)
+# age <- rep(0,rownum)
+bias <- rep(0,rownum)
+phi <- rep(0,rownum)
+for(i in 1:rownum)
+{
+  # age[i] <- sepsis_edit0$admission_age[i]
+  # if(sepsis_edit0$gender[i]=="M")
+  # {
+  #   sex[i] <- 1
+  # }
+  # if(sepsis_edit0$first_hosp_stay[i]=="t")
+  # {
+  #   first_hosp_stay1[i] <- 1
+  # }
+  # else
+  # {
+  #   first_hosp_stay2[i] <- 1
+  # }
+  bias[i] <- 0.5*sepsis_edit0[i,29]+0.3*sepsis_edit0[i,12]+0.1*sepsis_edit0[i,15]+0.1*sepsis_edit0[i,14]
+  bias[i]  <- Ks*bias[i]*exp(Ks*bias[i])
+}
+if(Ks!=0){bias <- normalize(bias)}
+Phi <- pnorm(bias-0.5,0,1)
+Phi <- 0.8*Phi+0.1
+prob <- Phi
+Phi <- as.data.frame(Phi)
+colnames(Phi) <- c("Sampprob")
+# View(sepsis_edit0)
+colnum <- ncol(sepsis_edit0)
+# q60<-quantile(sepsis_edit0$Sampprob, 0.60)
+# source_origin <- sepsis_edit0[which(sepsis_edit0$Sampprob>q60),c(2:colnum)]
+# remain <- sepsis_edit0[-which(sepsis_edit0$Sampprob>q60),c(2:colnum)]
+rownum <- nrow(sepsis_edit0)
+sample_size <- round(0.6*rownum)
+sampled_indices <- sample(1:rownum,size=sample_size,prob=prob,replace = FALSE)
+source_origin <- sepsis_edit0[sampled_indices,]
+remain <- sepsis_edit0[-sampled_indices,]
+san <- sample(nrow(remain),0.5*nrow(remain),replace=FALSE)
+target_origin <- remain[san,]
+test_origin <- remain[-san,]
+write.csv(source_origin, file = "source_Ks3.csv", row.names = F)
+write.csv(target_origin, file = "target_Ks3.csv", row.names = F)
+write.csv(test_origin, file = "test_Ks3.csv", row.names = F)
+
+sourcedata <- read.csv("source_Ks3.csv")
+targetdata <- read.csv("test_Ks3.csv")
+validdata <- read.csv("target_Ks3.csv")
+# View(sourcedata)
+# View(targetdata)
+# View(testdata)
+
+train_data <- sourcedata
+test_data <- targetdata
+target_data <- validdata
+colnames(train_data)[1] <- 'Y'
+colnames(test_data)[1] <- 'Y'
+colnames(target_data)[1] <- 'Y'
+train_data$gender<-as.numeric(factor(train_data$gender))
+train_data$ethnicity<-as.numeric(factor(train_data$ethnicity))
+train_data$long_title<-as.numeric(factor(train_data$long_title))
+train_data$first_hosp_stay<-as.numeric(factor(train_data$first_hosp_stay))
+train_data$first_icu_stay<-as.numeric(factor(train_data$first_icu_stay))
+train_data <- as.matrix(train_data)
+test_data$gender<-as.numeric(factor(test_data$gender))
+test_data$ethnicity<-as.numeric(factor(test_data$ethnicity))
+test_data$long_title<-as.numeric(factor(test_data$long_title))
+test_data$first_hosp_stay<-as.numeric(factor(test_data$first_hosp_stay))
+test_data$first_icu_stay<-as.numeric(factor(test_data$first_icu_stay))
+test_data <- as.matrix(test_data)
+target_data$gender<-as.numeric(factor(target_data$gender))
+target_data$ethnicity<-as.numeric(factor(target_data$ethnicity))
+target_data$long_title<-as.numeric(factor(target_data$long_title))
+target_data$first_hosp_stay<-as.numeric(factor(target_data$first_hosp_stay))
+target_data$first_icu_stay<-as.numeric(factor(target_data$first_icu_stay))
+target_data <- as.matrix(target_data)
+sourcedata <- train_data
+targetdata <- test_data
+validdata <- target_data
+combine_data <- rbind(train_data,test_data)
+# View(sourcedata)
+# View(targetdata)
+# View(testdata)
+
+X.train <- train_data[,-1]
+Y.train <- train_data[,1]
+X.test <- test_data[,-1]
+Y.test <- test_data[,1]
+X.target <- target_data[,-1]
+Y.target <- target_data[,1]
+X.combine <- combine_data[,-1]
+Y.combine <- combine_data[,1]
+Y.prodict <- list()
+lasso.cv <- cv.glmnet(X.train,Y.train, alpha = 1, family = "binomial", standardize = T, nfolds = 10,intercept = T)
+lasso.mdl <- glmnet(X.test, Y.test, alpha = 1, standardize = T, nlambda=100, lambda=lasso.cv$lambda.1se,intercept = T, family = "binomial")
+Y.prodict <- predict(lasso.mdl, newx = X.target, type = "response")
+roc_obj <- roc(Y.target,as.numeric(Y.prodict))
+bestp <- roc_obj$thresholds[which.max(roc_obj$sensitivities + roc_obj$specificities - 1)]
+Yhat <- ifelse(Y.prodict > bestp,1,0)
+tpr <- roc_obj$sensitivities
+fpr <- 1 - roc_obj$specificities
+auc <- roc_obj$auc
+table <- table(Yhat,Y.target)
+acc <- sum(diag(table))/sum(table)
+pre <- table[2,2]/sum(table[,2])
+rec <- table[2,2]/sum(table[2,])
+table <- as.numeric(table)
+mcc <- (table[4]*table[1]+table[2]*table[3])/
+  sqrt((table[4]+table[2])*(table[4]+table[3])*(table[1]+table[2])*(table[1]+table[3]))
+F1 <- 2*pre*rec/(pre+rec)
+evaluation <- c(auc,acc,mcc,F1)
+# View(evaluation)
+# plot_GLM_Lasso <- ggplot() +
+#   geom_line(aes(x = fpr, y = tpr, color="test data")) +
+#   geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+#   labs(x = "False Positive Rate", y = "True Positive Rate") +
+#   ggtitle("ROC Curve of GLM-Lasso with Co-sft")+
+#   geom_text(aes(x=0.75,y=0.15),label= paste("AUC of test data=",round(roc_obj$auc,3),seq=""),cex=4.5)+
+#   theme_light()
+# show(plot_GLM_Lasso)
+tpr_model1 <- tpr
+fpr_model1 <- fpr
+auc_model1 <- auc
+
+colnum <- ncol(sourcedata)
+sourcedata <- as.data.frame(sourcedata)
+targetdata <- as.data.frame(targetdata)
+validdata <- as.data.frame(validdata)
+traindata <- sourcedata
+testdata <- targetdata
+validdata <- validdata
+trainx <- sourcedata[,c(2:colnum)]
+trainy <- sourcedata$Y
+testx <- targetdata[,c(2:colnum)]
+testy <- targetdata$Y
+validx <- validdata[,c(2:colnum)]
+validy <- validdata$Y
+trainx <- as.matrix(trainx)
+testx <- as.matrix(testx)
+trainy <- as.matrix(trainy)
+testy <- as.matrix(testy)
+validx <- as.matrix(validx)
+validy <- as.matrix(validy)
+
+TrAdaBoost <- function(source_data, target_data, source_labels, target_labels, iter = 20) {
+  source_size <- nrow(source_data)
+  target_size <- nrow(target_data)
+  total_size <- source_size + target_size
+  full_data <- rbind(source_data, target_data)
+  full_labels <- as.factor(c(source_labels, target_labels))
+  W <- c(rep(1 / (2 * source_size), source_size), rep(1 / (2 * target_size), target_size))
+  models <- list() 
+  alpha <- numeric(iter)  
+  gamma <- 1/(1+sqrt(2*log(source_size)/iter))
+  for (t in 1:iter) {
+    W <- W / sum(W)
+    #full_frame <- as.data.frame(full_data)
+    target_frame <- as.data.frame(target_data)
+    #model <- rpart(full_labels ~ ., data = full_frame, weights = W, method = "class",
+    #               control = rpart.control(maxdepth = 5, minsplit = 10))
+    lasso.cv <- cv.glmnet(full_data,full_labels, alpha = 1, family = "binomial", standardize = T, nfolds = 10,intercept = T)
+    model <- glmnet(full_data, full_labels, alpha = 1, standardize = T, nlambda=100, lambda=lasso.cv$lambda.1se,intercept = T, family = "binomial")
+    models[[t]] <- model
+    pred <- predict(model, newx=full_data, type = "response")
+    # model <- svm(full_data, as.factor(full_labels), probability = TRUE, weights = W)
+    # models[[t]] <- model
+    # pred <- as.numeric(predict(model, newdata = full_data,type="response"))-1
+    epsilon <- sum(W[(source_size + 1):total_size] * (pred[(source_size + 1):total_size] != target_labels))
+    sum_weight <-max(min(sum(W[(source_size + 1):total_size]),1),1e-10)
+    epsilon <- epsilon/sum_weight
+    epsilon <- max(min(epsilon, 0.49), 1e-10)
+    alpha[t] <- (1 - epsilon) / epsilon
+    for(i in 1:source_size)
+    {
+      W[i] <- W[i]*gamma^{as.numeric(pred[i]!=source_labels[i])}
+    }
+    for(i in (source_size+1):total_size)
+    {
+      W[i] <- W[i]*alpha[t]^{as.numeric(pred[i]!=target_labels[i-source_size])}
+    }
+    W <- W/sum(W)
+  }
+  return(list(models = models, alpha = alpha))
+}
+
+# TrAdaBoost_predict <- function(models, alpha, new_data) {
+#   final_pred <- rep(0, nrow(new_data))
+#   #new_frame <- as.data.frame(new_data)
+#   for (t in 1:length(models)) {
+#     pred <- predict(models[[t]], newx = new_data, type = "response")
+#     final_pred <- final_pred + 0.5*log(alpha[t])* (2 * pred - 1) 
+#   }
+#   return(ifelse(final_pred > 0, 1, 0)) 
+# }
+
+TrAdaBoost_predict <- function(models, alpha, new_data) {
+  num_models <- length(models)
+  weighted_sum <- rep(0, nrow(new_data))
+  weight_total <- sum(log(alpha))  
+  for (t in 1:num_models) {
+    pred <- predict(models[[t]], newx = new_data, type = "response")  
+    weighted_sum <- weighted_sum + log(alpha[t]) * pred  
+  }
+  final_prob <- weighted_sum / weight_total  
+  return(final_prob)  
+}
+
+trada_model <- TrAdaBoost(trainx, testx, trainy, testy, iter = 20)
+predicted_TAB <- as.numeric(TrAdaBoost_predict(trada_model$models, trada_model$alpha, validx))
+roc_obj <- roc(validdata$Y,predicted_TAB)
+bestp_TAB <- roc_obj$thresholds[which.max(roc_obj$sensitivities + roc_obj$specificities - 1)]
+Yhat <- ifelse(predicted_TAB > bestp_TAB,1,0)
+tpr <- roc_obj$sensitivities
+fpr <- 1 - roc_obj$specificities
+auc <- roc_obj$auc
+table <- table(Yhat,validdata$Y)
+acc <- sum(diag(table))/sum(table)
+pre <- table[2,2]/sum(table[,2])
+rec <- table[2,2]/sum(table[2,])
+table <- as.numeric(table)
+mcc <- (table[4]*table[1]+table[2]*table[3])/
+  sqrt((table[4]+table[2])*(table[4]+table[3])*(table[1]+table[2])*(table[1]+table[3]))
+F1 <- 2*pre*rec/(pre+rec)
+evaluation_Tra <- c(auc,acc,mcc,F1)
+# View(evaluation_Tra)
+# plot(roc_obj)
+tpr_model2 <- tpr
+fpr_model2 <- fpr
+auc_model2 <- auc
+
+TrAdaBoost_heuristic <- function(source_data, target_data, source_labels, target_labels, val_data,
+                                 iter = 20, lambda = 0.01,
+                                 alpha_thres = 1e-3, conf_thres= 0.8) 
+{ source_size <- nrow(source_data)
+target_size <- nrow(target_data)
+val_size <- nrow(val_data)
+total_size <- source_size + target_size + val_size
+pseudo_labels <- rep(0, val_size)  
+full_data <- rbind(source_data, target_data, val_data)
+full_labels <- as.factor(c(source_labels, target_labels, pseudo_labels))
+W <- c(rep(1 / (2 * source_size), source_size), 
+       rep(1 / (2 * target_size), target_size), 
+       rep(1 / (2 * val_size), val_size))
+models <- list() 
+alpha <- numeric(iter)  
+classifier_type <- character(iter)
+for (t in 1:iter) {
+  W <- W/sum(W)
+  full_frame <- as.data.frame(full_data)
+  target_frame <- as.data.frame(target_data)
+  tree_model <- rpart(full_labels ~ ., data = full_frame, weights = W, method = "class",
+                      control = rpart.control(maxdepth = 5, minsplit = 10))
+  tree_pred <- as.numeric(predict(tree_model, newdata=full_frame, type = "class"))-1
+  tree_error <- sum(W[(source_size + 1):(source_size+target_size)] * (tree_pred[(source_size + 1):(source_size+target_size)] != target_labels))
+  rf_model <- randomForest(full_data, full_labels, weights = W, ntree = 20, classwt = c("0" = 1, "1" = 10),
+                           strata = full_labels, sampsize = c(50, 50))         
+  rf_pred <- as.numeric(predict(rf_model, newdata=full_data))-1
+  rf_error <- sum(W[(source_size + 1):(source_size+target_size)] * (rf_pred[(source_size + 1):(source_size+target_size)] != target_labels))
+  # whole_frame <- cbind(full_labels,full_frame)
+  # svm_tune <- tune(svm, full_labels ~ ., data = whole_frame, kernel = "polynomial",
+  #                   ranges = list(cost = c(0.01, 0.1, 1, 5, 10),
+  #                                 gamma=c(0.1,0.5,1),
+  #                                 degree=c(2,3,4)))
+  # svm_model <- svm_tune$best.model
+  svm_model <- svm(full_data, as.factor(full_labels), probability = TRUE, weights = W)
+  svm_pred <- as.numeric(predict(svm_model, newdata=full_data, type = "response"))-1
+  svm_error <- sum(W[(source_size + 1):(source_size+target_size)] * (svm_pred[(source_size + 1):(source_size+target_size)] != target_labels))
+  errormin <- min(tree_error,rf_error,svm_error)
+  if ( errormin==tree_error) {
+    model <- tree_model
+    pred <- predict(model, full_frame, type = "class")
+    classifier_type[t] <- "Decision Tree"
+  } else if ( errormin==rf_error) {
+    model <- rf_model
+    pred <- predict(model, full_data)
+    classifier_type[t] <- "Random Forest"
+  } else {
+    model <- svm_model
+    pred <- predict(model, full_data, type = "response")
+    classifier_type[t] <- "SVM"
+  }
+  models[[t]] <- model
+  pseudo_labels <- as.numeric(pred[(source_size+target_size+1):total_size]) - 1
+  full_labels[(source_size + target_size + 1):total_size] <- pseudo_labels
+  # epsilon <- sum(W[(source_size + 1):total_size] * (as.numeric(pred[(source_size + 1):total_size]) - 1 != target_labels))
+  # epsilon <- max(min(epsilon, 0.49), 1e-10) 
+  epsilon <- sum(W[(source_size + 1):(source_size+target_size)] * (as.numeric(pred[(source_size + 1):(source_size+target_size)])-1 != target_labels))
+  sum_weight <-max(min(sum(W[(source_size + 1):(source_size+target_size)]),1),1e-10)
+  epsilon <- epsilon/sum_weight
+  epsilon <- max(min(epsilon, 0.49), 1e-10)
+  alpha[t] <- 0.5 * log((1 - epsilon) / epsilon)
+  W[as.numeric(pred) - 1 == full_labels] <- W[as.numeric(pred) - 1 == full_labels] * exp(-alpha[t]) * (1 - lambda)
+  W[as.numeric(pred) - 1 != full_labels] <- W[as.numeric(pred) - 1 != full_labels] * exp(alpha[t]) * (1 + lambda)
+  if (t > 1) {
+    alpha_diff <- abs(alpha[t] - alpha[t - 1])
+    if (alpha_diff < alpha_thres) {
+      cat("Stopping early at iteration", t, ".\n")
+      break
+    }
+    if ("rpart" %in% class(model)) {
+      pred_prob <- predict(model, full_frame, type = "prob")[, 2]
+    } else if ("randomForest" %in% class(model)) {
+      pred_prob <- predict(model, full_data, type = "prob")[, 2]
+    } else if ("svm" %in% class(model)) {
+      pred_prob <- attr(predict(model, full_data, probability = TRUE), "probabilities")[, 2]
+    }
+    confidence <- abs(pred_prob - 0.5) * 2  
+    misclassified <- (as.numeric(pred) - 1 != full_labels)
+    misclassified_confidence <- confidence[misclassified]
+    if (sum(misclassified) > 0) {
+      high_confidence_misclassified <- misclassified_confidence > conf_thres
+      if (sum(high_confidence_misclassified) > 0) {
+        source_data <- source_data[!misclassified[1:source_size], ]
+        source_labels <- source_labels[!misclassified[1:source_size]]
+        source_size <- nrow(source_data)
+        total_size <- source_size + target_size + val_size
+        full_data <- rbind(source_data, target_data, val_data)
+        full_labels <- as.factor(c(source_labels, target_labels, pseudo_labels))
+        W <- c(rep(1 / (2 * source_size), source_size), 
+               rep(1 / (2 * target_size), target_size), 
+               rep(1 / (2 * val_size), val_size))
+      }
+    }
+  }
+}
+return(list(models = models, alpha = alpha, classifier_type = classifier_type))
+}
+
+TrAdaBoost_predict_heuristic <- function(models, alpha, new_data) {
+  final_pred <- rep(0, nrow(new_data))
+  new_frame <- as.data.frame(new_data)
+  for (t in 1:length(models)) {
+    if ("rpart" %in% class(models[[t]])) {
+      pred <- as.numeric(predict(models[[t]], newdata = new_frame, type = "class")) - 1
+    } else if ("randomForest" %in% class(models[[t]])) {
+      pred <- as.numeric(predict(models[[t]], newdata = new_data)) - 1
+    } else if ("svm" %in% class(models[[t]])) {
+      pred <- as.numeric(predict(models[[t]], newdata = new_data, type = "response")) - 1
+    }
+    final_pred <- final_pred + alpha[t] * (2 * pred - 1)  
+  }
+  return(ifelse(final_pred > 0, 1, 0)) 
+}
+
+
+TrAdaBoost_heuristic <- function(source_data, target_data, source_labels, target_labels, val_data,
+                                 iter = 20, lambda = 0.01,
+                                 alpha_thres = 1e-3, conf_thres= 0.8) {
+  source_size <- nrow(source_data)
+  target_size <- nrow(target_data)
+  val_size <- nrow(val_data)
+  total_size <- source_size + target_size + val_size
+  pseudo_labels <- rep(0, val_size)  
+  full_data <- rbind(source_data, target_data, val_data)
+  full_labels <- as.factor(c(source_labels, target_labels, pseudo_labels))
+  W <- c(rep(1 / (2 * source_size), source_size), 
+         rep(1 / (2 * target_size), target_size), 
+         rep(1 / (2 * val_size), val_size))
+  models <- list()
+  alpha <- numeric(iter)
+  classifier_type <- character(iter)
+  target_index <- (source_size + 1):(source_size + target_size)
+  for (t in 1:iter) {
+    W <- W / sum(W)
+    glmnet_model <- cv.glmnet(as.matrix(full_data), full_labels, family="binomial", alpha=1, weights=W)
+    glm_pred <- predict(glmnet_model, newx=as.matrix(full_data), s="lambda.min", type="response")
+    glm_error <- sum(W[target_index] * (round(glm_pred[target_index]) != target_labels))
+    svm_model <- svm(full_data, as.factor(full_labels), kernel="linear", probability=TRUE, weights=W)
+    svm_pred_prob <- attr(predict(svm_model, newdata=full_data, probability=TRUE), "probabilities")[, 2]
+    svm_pred <- ifelse(svm_pred_prob > 0.5, 1, 0)
+    svm_error <- sum(W[target_index] * (svm_pred[target_index] != target_labels))
+    if (glm_error <= svm_error) {
+      model <- glmnet_model
+      pred_prob <- glm_pred
+      classifier_type[t] <- "GLM Lasso"
+    } else {
+      model <- svm_model
+      pred_prob <- svm_pred_prob
+      classifier_type[t] <- "SVM"
+    }
+    models[[t]] <- model
+    pseudo_labels <- ifelse(pred_prob[(source_size+target_size+1):total_size] > 0.5, 1, 0)
+    full_labels[(source_size + target_size + 1):total_size] <- pseudo_labels
+    epsilon <- sum(W[target_index] * (round(pred_prob[target_index]) != target_labels)) / sum(W[target_index])
+    epsilon <- max(min(epsilon, 0.49), 1e-10)
+    alpha[t] <- 0.5 * log((1 - epsilon) / epsilon)
+    W[round(pred_prob) == full_labels] <- W[round(pred_prob) == full_labels] * exp(-alpha[t]) * (1 - lambda)
+    W[round(pred_prob) != full_labels] <- W[round(pred_prob) != full_labels] * exp(alpha[t]) * (1 + lambda)
+    if (t > 1 && abs(alpha[t] - alpha[t - 1]) < alpha_thres) {
+      cat("Stopping early at iteration", t, "\n")
+      break
+    }
+  }
+  return(list(models = models, alpha = alpha, classifier_type = classifier_type))
+}
+
+TrAdaBoost_predict_heuristic <- function(models, alpha, classifier_type, new_data) {
+  final_prob <- rep(0, nrow(new_data))
+  for (t in 1:length(models)) {
+    if (classifier_type[t] == "GLM Lasso") {
+      pred_prob <- predict(models[[t]], newx=as.matrix(new_data), s="lambda.min", type="response")
+    } else {
+      pred_prob <- attr(predict(models[[t]], newdata=new_data, probability=TRUE), "probabilities")[, 2]
+    }
+    final_prob <- final_prob + alpha[t] * pred_prob
+  }
+  final_prob <- final_prob / sum(alpha)
+  return(final_prob)
+}
+
+trada_heuristic <- TrAdaBoost_heuristic(trainx, testx, trainy, testy, validx, iter = 50, lambda=0.01, alpha_thres = 1e-3, conf_thres= 0.8) 
+predicted_heuristic <- as.numeric(TrAdaBoost_predict_heuristic(trada_heuristic$models, trada_heuristic$alpha, trada_heuristic$classifier_type, validx))
+roc_obj <- roc(validdata$Y,predicted_heuristic)
+bestp_heuristic <- roc_obj$thresholds[which.max(roc_obj$sensitivities + roc_obj$specificities - 1)]
+Yhat <- ifelse(predicted_heuristic > bestp_heuristic,1,0)
+tpr <- roc_obj$sensitivities
+fpr <- 1 - roc_obj$specificities
+auc <- roc_obj$auc
+table <- table(Yhat,validdata$Y)
+acc <- sum(diag(table))/sum(table)
+pre <- table[2,2]/sum(table[,2])
+rec <- table[2,2]/sum(table[2,])
+table <- as.numeric(table)
+mcc <- (table[4]*table[1]+table[2]*table[3])/
+  sqrt((table[4]+table[2])*(table[4]+table[3])*(table[1]+table[2])*(table[1]+table[3]))
+F1 <- 2*pre*rec/(pre+rec)
+evaluation_TraHeu <- c(auc,acc,mcc,F1)
+# View(evaluation_TraHeu)
+# plot(roc_obj)
+tpr_model3 <- tpr
+fpr_model3 <- fpr
+auc_model3 <- auc
+
+evaluation_comparison <- rbind(evaluation,evaluation_Tra,evaluation_TraHeu)
+View(evaluation_comparison)
+write.csv(round(evaluation_comparison,3),file = "evaluation_comp.csv")
+
+
+roc_data <- data.frame(
+  fpr = c(fpr_model1, fpr_model2, fpr_model3),
+  tpr = c(tpr_model1, tpr_model2, tpr_model3), 
+  Model = rep(c("GLM-Lasso", "Tradaboost", "Tra-Heuristic"), 
+              times = c(length(fpr_model1), length(fpr_model2), length(fpr_model3)))
+)
+roc_data$Model <- factor(roc_data$Model, levels = c("Tra-Heuristic", "Tradaboost", "GLM-Lasso"))
+auc_values <- data.frame(
+  Model = c("GLM-Lasso", "Tradaboost", "Tra-Heuristic"),
+  AUC = c(auc_model1, auc_model2, auc_model3)
+)%>% arrange(desc(AUC))  # **按 AUC 值降序排列**
+auc_values$y_pos <- seq(0.16, 0.04, length.out = nrow(auc_values))
+plot_roc <- ggplot(roc_data, aes(x = fpr, y = tpr, color = Model)) +
+  geom_line(linewidth = 0.8) +  # 画曲线
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "#696969",linewidth = 0.5) +  # 参考线
+  labs(x = "假正例率", y = "真正例率", title = "协变量偏移处理前后模型ROC曲线") +
+  scale_color_manual(name="模型",values = c("Tra-Heuristic"="#DC143C", 
+                                "Tradaboost"="#FFA500",
+                                "GLM-Lasso"="#1E90FF")) +  
+#  geom_text(data = auc_values, aes(x = 0.75, y = y_pos, 
+#                                   label = paste0(Model, " AUC=", round(AUC, 3))),
+#            color = "black", size = 3.5, fontface = "bold")+  
+  geom_text(
+    data = auc_values, 
+    aes(x = 0.6, y = y_pos,  
+        label = sprintf("%s AUC = %.3f", Model, AUC)),
+    color = "black", 
+    size = 4,  
+    fontface = "bold",
+    hjust = 0) +  
+  theme_bw() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),  
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(),
+    text = element_text(size = 12, face = "bold"),  
+    legend.text = element_text(size = 12), 
+    legend.title = element_text(size = 12, face = "bold"),
+    axis.text = element_text(size = 12, face = "bold"),
+    axis.title = element_text(size = 12, face = "bold"),
+    legend.key.size = unit(1, "lines"),
+    plot.title = element_text(size = 14, face = "bold")  
+  )
+show(plot_roc)
+
+roc_data <- data.frame(
+  fpr = c(fpr_model1, fpr_model2, fpr_model3),
+  tpr = c(tpr_model1, tpr_model2, tpr_model3), 
+  Model = rep(c("GLM-Lasso", "Tradaboost", "Tra-Heuristic"), 
+              times = c(length(fpr_model1), length(fpr_model2), length(fpr_model3))))
+  roc_data$Model <- factor(roc_data$Model, levels = c("Tra-Heuristic", "Tradaboost", "GLM-Lasso"))
+  
+  auc_values <- data.frame(
+    Model = c("GLM-Lasso", "Tradaboost", "Tra-Heuristic"),
+    AUC = c(auc_model1, auc_model2, auc_model3)
+  ) %>% arrange(desc(AUC))  
+  auc_values$y_pos <- seq(0.18, 0.06, length.out = nrow(auc_values)) 
+  
+  plot_roc <- ggplot(roc_data, aes(x = fpr, y = tpr, color = Model)) +
+    geom_line(linewidth = 1.2) +  
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", 
+                color = "gray40", linewidth = 0.8) +  
+    labs(x = "假正例率 (FPR)", y = "真正例率 (TPR)", 
+         title = "协变量偏移处理前后模型ROC曲线对比") +
+    scale_color_manual(
+      name = "模型",
+      values = c("Tra-Heuristic" = "#DC143C",  
+                 "Tradaboost" = "#FF8C00",    
+                 "GLM-Lasso" = "#4169E1"),    
+      labels = c("Tra-Heuristic", "Tradaboost", "GLM-Lasso")) +  
+    geom_text(
+      data = auc_values, 
+      aes(x = 0.72, y = y_pos,  
+          label = sprintf("%s AUC = %.3f", Model, AUC)),
+      color = "black", 
+      size = 4.5,  
+      fontface = "bold",
+      hjust = 0) +  
+    theme_bw() +
+    theme(
+      panel.border = element_rect(colour = "black", fill = NA, linewidth = 1.2),  
+      panel.grid.major = element_blank(),  
+      panel.grid.minor = element_blank(),
+      text = element_text(size = 13, face = "bold"), 
+      legend.text = element_text(size = 12), 
+      legend.title = element_text(size = 13, face = "bold"),
+      axis.text = element_text(size = 12, face = "bold"),
+      axis.title = element_text(size = 13, face = "bold"),
+      legend.position = c(0.8, 0.2), 
+      legend.key.size = unit(1.2, "lines"),
+      legend.background = element_rect(fill = "white", color = "black"),
+      plot.title = element_text(size = 15, face = "bold", hjust = 0.5)  
+    ) 
+print(plot_roc)
