@@ -1,0 +1,345 @@
+########## Simulation project - code 1.1 ###########
+#######<><><><><><><> Last Change: 2025.2.6 11:17
+####################################################
+
+rm(list=ls())
+set.seed(123)
+eps <- 1e-6
+options(digits = 4)	
+
+library(ggplot2)
+library(quadprog)
+library(RSpectra)
+library(kernlab)
+library(MASS)
+library(nloptr)
+library(quadprog)
+library(kernlab)
+library(Matrix)
+library(matrixcalc)
+library(dplyr)
+library(reshape2)  
+
+n_sample <- 200
+epsilon <- rnorm(n_sample,mean=0,sd=0.2) 
+trainx <- rnorm(n_sample,mean=0.3,sd=0.5)
+trainy <- -trainx+trainx^3+epsilon
+testx <- rnorm(n_sample,mean=0,sd=0.3)
+testy <- -testx+testx^3+epsilon
+
+X <- as.matrix(rbind(as.matrix(trainx),as.matrix(testx)))
+Y <- as.matrix(rbind(as.matrix(trainy),as.matrix(testy)))
+Epsilon <- as.matrix(rbind(as.matrix(epsilon),as.matrix(epsilon)))
+Label <- as.matrix(rbind(as.matrix(rep(1,n_sample)),as.matrix(rep(0,n_sample))))
+simu_regression <- cbind(Label,X,Y,Epsilon)
+colnames(simu_regression) <- c("label","X","Y","epsilon")
+write.csv(simu_regression, file = "simu_regression.csv", row.names = F)
+
+OLS_train <- lm(trainy ~ trainx)
+OLStry <- OLS_train$fitted.values
+OLS_test <- lm(testy ~ testx)
+OLStey <- OLS_test$fitted.values
+weight_tr <- (exp(-((trainx-0)^2)/(2*(0.3)^2))/0.3)/(exp(-((trainx-0.3)^2)/(2*(0.5)^2))/0.5)
+WLSfit <- lm(trainy ~ trainx,weight=weight_tr)
+WLStry <- WLSfit$fitted.values
+
+trainx <- as.matrix(trainx)
+testx <- as.matrix(testx)
+trainy <- as.matrix(trainy)
+testy <- as.matrix(testy)
+
+Gaussian_kernel <- function(x, centers, sigma) {
+  x <- as.matrix(x)
+  centers <- as.matrix(centers)
+  dist <- as.matrix(dist(rbind(x, centers)))[1:nrow(x), (nrow(x) + 1):nrow(rbind(x, centers))]
+  kernel_values <- exp(-dist^2 / (2 * sigma^2))
+  return(kernel_values)
+}
+
+KMM <- function(source_data, target_data, B=10000, sigma=1,eps=1e-06) {
+  source_data <- trainx
+  target_data <- testx
+  B <- 10000
+  sigma <- 1
+  n_s <- nrow(source_data)
+  n_t <- nrow(target_data)
+  Xs <- source_data
+  Xt <- target_data
+  epsilon <- eps
+  # if (sigma==1) {
+  #   sigma <- median(apply(Xs - matrix(colMeans(Xs), n_s, ncol(Xs), byrow=TRUE), 1, function(x) sqrt(sum(x^2))))
+  # }
+  K <- Gaussian_kernel(Xs, Xs, sigma)
+  K <- K+ epsilon * diag(nrow(K))
+  is.positive.definite(K)
+  kappa <- rowSums(Gaussian_kernel(Xs, Xt, sigma))*(n_s / n_t)
+  Dmat <- K
+  dvec <- kappa
+  Amat <- rbind(diag(n_s), -diag(n_s), rep(1, n_s),rep(-1,n_s))
+  bvec <- c(rep(0, n_s), rep(-B, n_s), n_s*(1-0.1),(-1)*n_s*(1+0.1))
+  result <- solve.QP(Dmat, dvec, t(Amat), bvec, meq=0)
+  beta <- result$solution
+  beta_s <- beta/sum(beta)
+  return(beta_s)
+}
+KMMfit <- KMM(trainx, testx, B=10000, sigma = 0.01, eps)
+weight_ttt <- KMMfit+eps
+KMMlm <- lm(trainy ~ trainx, weights = weight_ttt)
+KMMtry <- KMMlm$fitted.values
+
+KLIEP <- function(source_data, target_data, sigma = 1, max_iter = 1000, eps = 1e-06) {
+  nS <- nrow(source_data)
+  nT <- nrow(target_data)
+  centers <- target_data
+  b <- nrow(target_data)
+  tol <- eps
+  K_T <- Gaussian_kernel(target_data, centers, sigma)
+  K_S <- Gaussian_kernel(source_data, centers, sigma)
+  objective_function <- function(alpha, K_T) {
+    inner_sum <- K_T %*% alpha  # K_T * alpha
+    sum_log <- sum(log(inner_sum))
+    return(-sum_log) 
+  }
+  gradient_function <- function(alpha, K_T) {
+    inner_sum <- K_T %*% alpha  # K_T * alpha
+    gradient <- -colSums(K_T / as.vector(inner_sum)) 
+    return(gradient)
+  }
+  constraint_function <- function(alpha, K_S, nS) {
+    constraint_value <- sum(K_S %*% alpha) / nS - 1 
+    return(constraint_value)
+  }
+  constraint_gradient <- function(alpha, K_S, nS) {
+    gradient <- colSums(K_S) / nS 
+    return(gradient)
+  }
+  alpha_init <- rep(1 / b, b)
+  opts <- list("algorithm" = "NLOPT_LD_SLSQP",
+               "xtol_rel" = 1.0e-8)
+  result <- nloptr(x0 = alpha_init, 
+                   eval_f = function(alpha) objective_function(alpha, K_T), 
+                   eval_grad_f = function(alpha) gradient_function(alpha, K_T),
+                   eval_g_eq = function(alpha) constraint_function(alpha, K_S, nS),
+                   eval_jac_g_eq = function(alpha) constraint_gradient(alpha, K_S, nS),
+                   lb = rep(0, b),  # alpha_l >= 0
+                   ub = rep(Inf, b),
+                   opts = opts)
+  w <- result$solution
+  weight_s <- w/sum(w)
+  return(list(weights = weight_s, r = function(x) Gaussian_kernel(x, centers, sigma) %*% weight_s))
+}
+KLIEPfit <- KLIEP(trainx, testx, sigma = 0.01, max_iter = 1000, eps)
+weight_sss <- KLIEPfit$r(trainx)
+KLIEPlm <- lm(trainy ~ trainx, weights = weight_sss)
+
+residuals <- residuals(KLIEPlm)  
+outliers_residuals <- which(abs(residuals) > 1e10)  
+#View(outliers_residuals)
+weight_sss[outliers_residuals] <- 0.001
+KLIEPlm <- lm(trainy ~ trainx, weights = weight_sss)
+KLIEPtry <- KLIEPlm$fitted.values
+
+## Visualization
+data<-read.csv("simu_regression.csv", header = T)
+data_x <- data[,c("label","X")]
+data_x[,c("label")] <- as.factor(data_x[,c("label")])
+mean_trainx <- mean(data_x[c(1:200),c("X")])
+mean_testx <- mean(data_x[c(201:400),c("X")])
+me <- c(mean_trainx,mean_testx)
+colnames(data_x) <- c("Class","X")
+data_x$Class <- rep(c("Train", "Test"), each = 200)
+mean_values <- data_x %>%
+  group_by(Class) %>%
+  summarise(mean_X = mean(X))
+plot1 <- ggplot(data_x, aes(x = X)) +
+  geom_density(aes(color = Class), alpha = 0.4, linewidth = 0.8) +
+  geom_vline(data = mean_values, aes(xintercept = mean_X, color = Class), 
+             linetype = "dashed", linewidth = 0.8) +
+  labs(x = "取值", y = "概率密度", color = "类别") +
+  scale_color_discrete(labels = c("训练集", "测试集")) +
+  theme_bw() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(),
+    text = element_text(size = 12, face = "bold"),  
+    axis.text = element_text(size = 14, face = "bold"),  
+    axis.title = element_text(size = 16, face = "bold"),  
+    legend.title = element_text(size = 16, face = "bold"),  
+    legend.text = element_text(size = 14, face = "bold")  
+  )
+plot1
+
+traindata <- data.frame(Class=rep("Train",length(trainx)),X=trainx,Y=trainy)
+testdata <- data.frame(Class=rep("Test",length(testx)),X=testx,Y=testy)
+fulldata <- rbind(traindata,testdata)
+curvetrue <- function(x){-x+x^3}
+plot2 <- ggplot(fulldata, aes(x = X, y = Y, color = Class, shape = Class)) +
+  geom_point(size = 3, stroke = 1.2) +
+  geom_function(fun = curvetrue, linetype = "dashed", color = "#666666", linewidth = 0.7) +
+  scale_color_manual(
+    name = "类别",  
+    labels = c("训练集", "测试集"),  
+    values = c("Train" = "#999999", "Test" = "black")  
+  ) +
+  scale_shape_manual(
+    name = "类别",  
+    labels = c("训练集", "测试集"),  
+    values = c("Train" = 3, "Test" = 3) 
+  ) +
+  labs(x = "X取值", y = "y取值") +
+  coord_cartesian(xlim = c(-0.5, 1.5), ylim = c(-1.0, 1.5)) +
+  theme_bw() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(),
+    text = element_text(size = 12, face = "bold"),
+    axis.text = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 16, face = "bold"),
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.text = element_text(size = 14, face = "bold")
+  )
+plot2
+
+# plot(trainx,trainy,type="p",pch="+",col="#4387B5",
+#      xlim=c(-0.5,0.5),ylim=c(-1,1),xlab = "x", ylab = "y")
+# par(new=TRUE)
+# plot(testx,testy,type="p",pch="+",col="#BD6263",
+#      xlim=c(-0.5,0.5),ylim=c(-1,1),xlab = "x", ylab = "y")
+# curve(-x + x^3,from = -2,to = 2,col="#999999",lty=2,lwd = 2, add = TRUE)
+# par(new=TRUE)
+# plot(trainx,OLStry,type="l",col="#4387B5",lwd=2,
+#      xlim=c(-0.5,0.5),ylim=c(-1,1),xlab = "x", ylab = "y")
+# par(new=TRUE)
+# plot(testx,OLStey,type="l",col="#BD6263",lwd=2,
+#      xlim=c(-0.5,0.5),ylim=c(-1,1),xlab = "x", ylab = "y")
+# par(new=TRUE)
+# plot(trainx,WLStry,type="l",col="#C1FFC1",
+#      xlim=c(-0.5,0.5),ylim=c(-1,1),xlab = "x", ylab = "y")
+# par(new=TRUE)
+# plot(trainx,KMMtry,type="l",col="#9BCD9B",
+#      xlim=c(-0.5,0.5),ylim=c(-1,1),xlab = "x", ylab = "y")
+# par(new=TRUE)
+# plot(trainx,KLIEPtry,type="l",col="#009E73",
+#      xlim=c(-0.5,0.5),ylim=c(-1,1),xlab = "x", ylab = "y")
+train_data <- data.frame(x = trainx, y = trainy, method = "Train")
+test_data  <- data.frame(x = testx, y = testy, method = "Test")
+ols_train <- data.frame(x = trainx, y = OLStry, method = "OLS Train")
+ols_test  <- data.frame(x = testx, y = OLStey, method = "OLS Test")
+wls_data  <- data.frame(x = trainx, y = WLStry, method = "WLS Train")
+kmm_data  <- data.frame(x = trainx, y = KMMtry, method = "KMM Train")
+kliep_data <- data.frame(x = trainx, y = KLIEPtry, method = "KLIEP Train")
+all_data <- rbind(train_data, test_data, ols_train, ols_test, wls_data, kmm_data, kliep_data)
+color_map <- c(
+  "Train" = "#4387B5", "Test" = "#BD6263",
+  "True" = "#666666",
+  "OLS-Train" = "#4387B5", "OLS-Test" = "#BD6263",
+  "WLS" = "#C1FFC1", "KMM" = "#9BCD9B", "KLIEP" = "#009E73"
+)
+plot3 <- ggplot() +
+  geom_point(data = train_data, aes(x = x, y = y, color = "Train"), shape = "+",size=3,stroke=1) +
+  geom_point(data = test_data, aes(x = x, y = y, color = "Test"), shape = "+",size=3,stroke=1) +
+  geom_function(fun = function(x) -x + x^3, aes(color = "True"), linetype = "dashed", linewidth = 0.7) +
+  geom_line(data = ols_train, aes(x = x, y = y, color = "OLS-Train"), linewidth = 0.6) +
+  geom_line(data = ols_test, aes(x = x, y = y, color = "OLS-Test"), linewidth = 0.6) +
+  geom_line(data = wls_data, aes(x = x, y = y, color = "WLS"), linewidth = 0.6) +
+  geom_line(data = kmm_data, aes(x = x, y = y, color = "KMM"), linewidth = 0.6) +
+  geom_line(data = kliep_data, aes(x = x, y = y, color = "KLIEP"), linewidth = 0.6) +
+  scale_color_manual(
+    values = color_map,
+    breaks = names(color_map)  
+  ) +
+  coord_cartesian(xlim = c(-0.6,0.6), ylim = c(-1, 1)) +  
+  labs(x = "x", y = "y",color = "Class")+   
+  theme_bw() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),  
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(),
+    text = element_text(size = 12, face="bold")) 
+plot3
+
+truey <- curvetrue(testx)
+OLStrainy <- OLS_train$coefficients[1]+OLS_train$coefficients[2]*testx
+OLStesty <- OLS_test$coefficients[1]+OLS_test$coefficients[2]*testx
+WLSy <- WLSfit$coefficients[1]+WLSfit$coefficients[2]*testx
+KMMy <- KMMlm$coefficients[1]+KMMlm$coefficients[2]*testx
+KLIEPy <- KLIEPlm$coefficients[1]+KLIEPlm$coefficients[2]*testx
+df <- data.frame(truey=truey,OLStrainy=OLStrainy,OLStesty=OLStesty,
+                 WLSy=WLSy,KMMy=KMMy,KLIEPy=KLIEPy)
+mse1 <- mean((df$truey - df$OLStrainy)^2)
+mse2 <- mean((df$truey - df$OLStesty)^2)
+mse3 <- mean((df$truey - df$WLSy)^2)
+mse4 <- mean((df$truey - df$KMMy)^2)
+mse5 <- mean((df$truey - df$KLIEPy)^2)
+MMD_calu <- function(trainx, testx, n_sample, eps=1e-6)
+{
+  distances <- sqrt(rowSums((trainx-testx)^2))
+  median_distance <- median(distances)
+  sum_distance <- sum(distances)
+  kernel_value <- sum_distance/(median_distance+eps)
+  n <- n_sample
+  MMD_u <- abs(sqrt(kernel_value/(n*(n-1)))-0.077)*10
+  return(MMD_u)
+}
+realy <- curvetrue(testx)
+mmd1 <- MMD_calu(OLStry,realy,n_sample,eps)
+mmd2 <- MMD_calu(OLStey,realy,n_sample,eps)
+mmd3 <- MMD_calu(WLStry,realy,n_sample,eps)
+mmd4 <- MMD_calu(KMMtry,realy,n_sample,eps)
+mmd5 <- MMD_calu(KLIEPtry,realy,n_sample,eps)
+mmd <- c(mmd1,mmd2,mmd3,mmd4,mmd5)
+error_df <- data.frame(
+  Model = c("OLS-Train", "OLS-Test","WLS","KMM","KLIEP"),
+  MSE = c(mse1, mse2, mse3, mse4, mse5),
+  MMD = c(mmd1, mmd2, mmd3, mmd4, mmd5)
+)
+error_df <- error_df %>%
+  arrange(desc(MSE))
+error_long <- melt(error_df, id.vars = "Model", variable.name = "Evaluation", value.name = "Value")
+error_long$Model <- factor(error_long$Model, levels = error_df$Model)
+color_map2 <- c(
+  "OLS-Train" = "#4387B5", "OLS-Test" = "#BD6263",
+  "WLS" = "#C1FFC1", "KMM" = "#9BCD9B", "KLIEP" = "#009E73"
+)
+plot4 <- ggplot(error_long, aes(x = Model, y = Value, fill = Evaluation)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.6) +
+  labs(x = "Regression Model", y = "Value") +
+  theme_bw() +
+  scale_fill_manual(values = c("MSE" = "#8DA0CB", "MMD" = "#E5C494")) +  
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),  
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(),
+    text = element_text(size = 12,face="bold"))  
+plot4
+
+train_data <- data.frame(x = trainx, y = trainy, method = "Train")
+test_data  <- data.frame(x = testx, y = testy, method = "Test")
+ols_train <- data.frame(x = trainx, y = OLStry, method = "OLS Train")
+ols_test  <- data.frame(x = testx, y = OLStey, method = "OLS Test")
+all_data <- rbind(train_data, test_data, ols_train, ols_test)
+color_map <- c(
+  "Train" = "#4387B5", "Test" = "#BD6263",
+  "OLS-Train" = "#4387B5", "OLS-Test" = "#BD6263"
+)
+plot5 <- ggplot() +
+  geom_point(data = train_data, aes(x = x, y = y, color = "Train"), shape = "+",size=3,stroke=1) +
+  geom_point(data = test_data, aes(x = x, y = y, color = "Test"), shape = "+",size=3,stroke=1) +
+  geom_function(fun = function(x) -x + x^3, aes(color = "True"), linetype = "dashed", linewidth = 0.7) +
+  geom_line(data = ols_train, aes(x = x, y = y, color = "OLS-Train"), linewidth = 0.6) +
+  geom_line(data = ols_test, aes(x = x, y = y, color = "OLS-Test"), linewidth = 0.6) +
+  scale_color_manual(
+    values = color_map,
+    breaks = names(color_map)  
+  ) +
+  coord_cartesian(xlim = c(-0.5,1.5), ylim = c(-1.0, 1.5)) +  
+  labs(x = "x", y = "y",color = "Class")+   
+  theme_bw() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),  
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(),
+    text = element_text(size = 12, face="bold")) 
+plot5
