@@ -1,0 +1,359 @@
+########## 本科毕业设计数据仿真project - code 2 ###########
+#######<><><><><><><> Edit by Lou Yuqing
+#######<><><><><><><> Last Change: 2025.2.12 11:15
+#####################################################
+##分类SVM算法仿真构造实例
+
+rm(list=ls())
+set.seed(123)
+eps <- 1e-6
+library(ggplot2)
+library(quadprog)
+library(RSpectra)
+library(kernlab)
+library(MASS)
+library(nloptr)
+library(kernlab)
+library(Matrix)
+library(matrixcalc)
+library(dplyr)
+library(e1071)  
+library(gridExtra) 
+library(patchwork)
+library(pROC)
+library(ks)     
+
+n_sample <- 400
+mu <- c(0, 0) 
+Sigma <- matrix(c(0.3, 0.01,  
+                  0.01, 0.1),  
+                nrow = 2)
+dataX <- mvrnorm(n_sample, mu = mu, Sigma = Sigma)
+X1 <- dataX[, 1]
+X2 <- dataX[, 2]
+epsilon <- rnorm(n_sample, mean=0, sd = 0.02) 
+boundary <- function(x){-x+x^{3}}
+Y <- ifelse(X2 > boundary(X1) + epsilon, 1, 0)
+data <- data.frame(Y = factor(Y), X1 = X1, X2 = X2)
+# ggplot(data, aes(x = X1, y = X2, color = Y)) +
+#   geom_point(size = 1) +
+#   geom_abline(intercept = 0.2, slope = 0.5, linetype = "dashed", color = "black") +
+#   labs(x = "X1", y = "X2") +
+#   theme_minimal()
+
+alpha <- 3 
+weights_Gau <- exp(-alpha*X1^2)
+weights_Log <- 1 / (1 + exp(-alpha * X1))
+weights_L <- exp(alpha*X1)
+weights <- weights_Gau
+weights <- weights/sum(weights)
+
+testsize <- 200
+trainsize <- n_sample-testsize
+sample_idx <- sample(1:n_sample, size = testsize, replace = FALSE, prob = weights)
+lab1 <- as.factor(rep("Test",testsize))
+lab2 <- as.factor(rep("Train",trainsize))
+shifted_data <- data.frame(Class= lab1, X1 = X1[sample_idx], X2 = X2[sample_idx], Y = factor(Y[sample_idx]))
+origin_data <- data.frame(Class= lab2,X1 = X1[-sample_idx], X2 = X2[-sample_idx], Y = factor(Y[-sample_idx]))
+traindata <- as.data.frame(origin_data)
+testdata <- as.data.frame(shifted_data)
+fulldata <- rbind(traindata, testdata)
+#View(fulldata)
+plot1 <- ggplot(fulldata, aes(x = X1, y = X2, color = Y, shape = Class, alpha = Class)) +
+  geom_point(size = 2.5) +
+  #geom_abline(intercept = 0.2, slope = 0.5, linetype = "dashed", color = "black") +
+  geom_function(fun = boundary, linetype = "dashed", color = "black")+
+  scale_shape_manual(name = "类别",values = c(17, 18),labels = c("训练集", "测试集")) + 
+  scale_alpha_manual(name = "类别",values = c(0.3, 1),labels = c("训练集", "测试集")) +  
+  labs(x = "X1取值", y = "X2取值",color="Y值")+
+  coord_cartesian(xlim = c(-1.2,1.2), ylim = c(-1.5, 1.5))  
+plot1 <- plot1+theme_bw() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(),
+    text = element_text(size = 12, face = "bold"),  
+    axis.text = element_text(size = 14, face = "bold"),  
+    axis.title = element_text(size = 16, face = "bold"),  
+    legend.title = element_text(size = 16, face = "bold"),  
+    legend.text = element_text(size = 14, face = "bold")  
+  )
+plot1
+
+#svm_train <- svm(Y ~ X1 + X2, data = traindata, kernel = "linear", cost = 1)
+#svm_train <- svm(Y ~ X1 + X2, data = traindata, kernel = "radial", cost = 1)
+#svm_train <- svm(Y ~ X1 + X2, data = traindata, kernel = "polynomial", cost = 1)
+#svm_test <- svm(Y ~ X1 + X2, data = testdata, kernel = "linear", cost = 1)
+#svm_test <- svm(Y ~ X1 + X2, data = testdata, kernel = "radial", cost = 1)
+#svm_test <- svm(Y ~ X1 + X2, data = testdata, kernel = "polynomial", cost = 1)
+tuneresult_train <- tune(svm, Y ~ X1 + X2, data = traindata, kernel = "polynomial",
+                    ranges = list(cost = c(0.01, 0.1, 1, 5, 10)))
+bestmodel_train <- tuneresult_train$best.model
+predicted_train <- as.numeric(predict(bestmodel_train, testdata,type="response"))
+roc_obj <- roc(testdata$Y,predicted_train)
+bestp_train <- roc_obj$thresholds[which.max(roc_obj$sensitivities + roc_obj$specificities - 1)]
+Yhat <- ifelse(predicted_train > bestp_train,1,0)
+tpr <- roc_obj$sensitivities
+fpr <- 1 - roc_obj$specificities
+auc <- roc_obj$auc
+table <- table(Yhat,testdata$Y)
+acc <- sum(diag(table))/sum(table)
+pre <- table[2,2]/sum(table[,2])
+rec <- table[2,2]/sum(table[2,])
+table <- as.numeric(table)
+mcc <- (table[4]*table[1]+table[2]*table[3])/
+  sqrt((table[4]+table[2])*(table[4]+table[3])*(table[1]+table[2])*(table[1]+table[3]))
+F1 <- 2*pre*rec/(pre+rec)
+evaluation <- c(auc,acc,mcc,F1)
+evaluation
+tuneresult_test <- tune(svm, Y ~ X1 + X2, data = testdata, kernel = "polynomial",
+                         ranges = list(cost = c(0.01, 0.1, 1, 5, 10)))
+bestmodel_test <- tuneresult_test$best.model
+predicted_test <- as.numeric(predict(bestmodel_test, testdata,type="response"))
+roc_obj <- roc(testdata$Y,predicted_test)
+bestp_test <- roc_obj$thresholds[which.max(roc_obj$sensitivities + roc_obj$specificities - 1)]
+Yhat <- ifelse(predicted_test > bestp_test,1,0)
+tpr <- roc_obj$sensitivities
+fpr <- 1 - roc_obj$specificities
+auc <- roc_obj$auc
+table <- table(Yhat,testdata$Y)
+acc <- sum(diag(table))/sum(table)
+pre <- table[2,2]/sum(table[,2])
+rec <- table[2,2]/sum(table[2,])
+table <- as.numeric(table)
+mcc <- (table[4]*table[1]+table[2]*table[3])/
+  sqrt((table[4]+table[2])*(table[4]+table[3])*(table[1]+table[2])*(table[1]+table[3]))
+F1 <- 2*pre*rec/(pre+rec)
+evaluation <- c(auc,acc,mcc,F1)
+evaluation
+
+svm_train <- bestmodel_train
+svm_test <- bestmodel_test
+trainx1_range <- seq(min(traindata$X1) - 0.5, max(traindata$X1) + 0.5, length.out = 200)
+trainx2_range <- seq(min(traindata$X2) - 0.5, max(traindata$X2) + 0.5, length.out = 200)
+grid_train <- expand.grid(X1 = trainx1_range, X2 = trainx2_range)
+grid_train$Pred <- predict(svm_train, grid_train)
+plot2 <-ggplot() +
+  geom_tile(data = grid_train, aes(x = X1, y = X2, fill = Pred), alpha = 0.3) +
+  scale_fill_manual(name="预测值",values = c("lightblue", "lightpink")) +
+  geom_point(data = traindata, aes(x = X1, y = X2, color = Y), size = 1.5,stroke = 1.2) +
+  geom_point(data = traindata[svm_train$index, ], 
+             aes(x = X1, y = X2), shape = 3, size = 1.7, color = "#838B8B", stroke = 1.2) +
+  # geom_abline(intercept = -svm_model$coefs %*% svm_model$SV %*% svm_model$rho / svm_model$coefs[1,1], 
+  #             slope = -svm_model$coefs[1,2] / svm_model$coefs[1,1], 
+  #             color = "black", linetype = "dashed") +
+  labs(title = "基于训练数据的SVM分类情况", x = "X1取值", y = "X2取值",color="Y值")+
+  coord_cartesian(xlim = c(-1,1), ylim = c(-1, 1))   
+plot2 <- plot2+theme_bw() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(),
+    text = element_text(size = 12, face = "bold"),  
+    axis.text = element_text(size = 14, face = "bold"),  
+    axis.title = element_text(size = 16, face = "bold"),  
+    legend.title = element_text(size = 16, face = "bold"),  
+    legend.text = element_text(size = 14, face = "bold")  
+  )
+testx1_range <- seq(min(testdata$X1) - 0.5, max(testdata$X1) + 0.5, length.out = 200)
+testx2_range <- seq(min(testdata$X2) - 0.5, max(testdata$X2) + 0.5, length.out = 200)
+grid_test <- expand.grid(X1 = testx1_range, X2 = testx2_range)
+grid_test$Pred <- predict(svm_test, grid_test)
+plot3 <- ggplot() +
+  geom_tile(data = grid_test, aes(x = X1, y = X2, fill = Pred), alpha = 0.3) +
+  scale_fill_manual(name="预测值",values = c("lightblue", "lightpink")) +
+  geom_point(data = testdata, aes(x = X1, y = X2, color = Y), size = 1.5, stroke = 1.2) +
+  geom_point(data = testdata[svm_test$index, ], 
+             aes(x = X1, y = X2), shape = 3, size = 1.7, color = "#838B8B", stroke = 1.2) +
+  # geom_abline(intercept = -svm_model$coefs %*% svm_model$SV %*% svm_model$rho / svm_model$coefs[1,1], 
+  #             slope = -svm_model$coefs[1,2] / svm_model$coefs[1,1], 
+  #             color = "black", linetype = "dashed") +
+  labs(title = "基于测试数据的SVM分类情况", x = "X1取值", y = "X2取值",color="Y值")+
+  coord_cartesian(xlim = c(-1,1), ylim = c(-1, 1))   
+plot3 <- plot3+theme_bw() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(),
+    text = element_text(size = 12, face = "bold"),  
+    axis.text = element_text(size = 14, face = "bold"),  
+    axis.title = element_text(size = 16, face = "bold"), 
+    legend.title = element_text(size = 16, face = "bold"),  
+    legend.text = element_text(size = 14, face = "bold")  
+  )
+combined_shifted <- plot2+plot3
+combined_shifted
+
+weights_sl <- weights_Gau[sample_idx]
+weights_comp <- 1/weights_sl
+weights_comp[is.na(weights_comp)] <- 1
+weights_comp <- as.vector((weights_comp-min(weights_comp))/sum(weights_comp-min(weights_comp)))
+sampled_comp <- sample(1:nrow(traindata), size = nrow(traindata), replace = TRUE, prob = weights_comp)
+resampled_train <- traindata[sampled_comp, ]  
+comp_svm <- ksvm(
+  Y ~ X1 + X2, data = resampled_train,
+  kernel = "polydot",    
+  prob.model = TRUE
+)
+predicted_comp <- as.numeric(predict(comp_svm, testdata,type="response"))
+roc_obj <- roc(testdata$Y,predicted_comp)
+bestp_comp <- roc_obj$thresholds[which.max(roc_obj$sensitivities + roc_obj$specificities - 1)]
+Yhat <- ifelse(predicted_comp > bestp_comp,1,0)
+tpr <- roc_obj$sensitivities
+fpr <- 1 - roc_obj$specificities
+auc <- roc_obj$auc
+table <- table(Yhat,testdata$Y)
+acc <- sum(diag(table))/sum(table)
+pre <- table[2,2]/sum(table[,2])
+rec <- table[2,2]/sum(table[2,])
+table <- as.numeric(table)
+mcc <- (table[4]*table[1]+table[2]*table[3])/
+  sqrt((table[4]+table[2])*(table[4]+table[3])*(table[1]+table[2])*(table[1]+table[3]))
+F1 <- 2*pre*rec/(pre+rec)
+evaluation <- c(auc,acc,mcc,F1)
+evaluation
+
+set.seed(123)
+trainx <- traindata[,c("X1","X2")]
+trainy <- traindata$Y
+testx <- testdata[,c("X1","X2")]
+testy <- testdata$Y
+trainx <- as.matrix(trainx)
+testx <- as.matrix(testx)
+trainy <- as.matrix(trainy)
+testy <- as.matrix(testy)
+
+Gaussian_kernel <- function(x, centers, sigma) {
+  x <- as.matrix(x)
+  centers <- as.matrix(centers)
+  dist <- as.matrix(dist(rbind(x, centers)))[1:nrow(x), (nrow(x) + 1):nrow(rbind(x, centers))]
+  kernel_values <- exp(-dist^2 / (2 * sigma^2))
+  return(kernel_values)
+}
+KMM <- function(source_data, target_data, B=10000, sigma=1,eps=1e-06) {
+  source_data <- trainx
+  target_data <- testx
+  B <- 10000
+  sigma <- 1
+  n_s <- nrow(source_data)
+  n_t <- nrow(target_data)
+  Xs <- source_data
+  Xt <- target_data
+  epsilon <- eps
+  # if (sigma==1) {
+  #   sigma <- median(apply(Xs - matrix(colMeans(Xs), n_s, ncol(Xs), byrow=TRUE), 1, function(x) sqrt(sum(x^2))))
+  # }
+  K <- Gaussian_kernel(Xs, Xs, sigma)
+  K <- K+ epsilon * diag(nrow(K))
+  is.positive.definite(K)
+  kappa <- rowSums(Gaussian_kernel(Xs, Xt, sigma))*(n_s / n_t)
+  Dmat <- K
+  dvec <- kappa
+  Amat <- rbind(diag(n_s), -diag(n_s), rep(1, n_s),rep(-1,n_s))
+  bvec <- c(rep(0, n_s), rep(-B, n_s), n_s*(1-0.1),(-1)*n_s*(1+0.1))
+  result <- solve.QP(Dmat, dvec, t(Amat), bvec, meq=0)
+  beta <- result$solution
+  beta_s <- beta/sum(beta)
+  return(beta_s)
+}
+KMMfit <- KMM(trainx, testx, B=10000, sigma = 0.01, eps)
+weights_ttt <- KMMfit
+weights_ttt <- as.vector((weights_ttt-min(weights_ttt))/sum(weights_ttt-min(weights_ttt)))
+# KMMlm <- lm(trainy ~ trainx, weights = weight_ttt)
+# KMMtry <- KMMlm$fitted.values
+sampled_ttt <- sample(1:nrow(traindata), size = nrow(traindata), replace = TRUE, prob = weights_ttt)
+resampled_train <- traindata[sampled_ttt, ] 
+KMM_svm <- ksvm(
+  Y ~ X1 + X2, data = resampled_train ,
+  kernel = "polydot",    
+  prob.model = TRUE
+)
+predicted_KMM <- as.numeric(predict(KMM_svm, testdata,type="response"))
+roc_obj <- roc(testdata$Y,predicted_KMM)
+bestp_KMM <- roc_obj$thresholds[which.max(roc_obj$sensitivities + roc_obj$specificities - 1)]
+Yhat <- ifelse(predicted_KMM > bestp_KMM,1,0)
+tpr <- roc_obj$sensitivities
+fpr <- 1 - roc_obj$specificities
+auc <- roc_obj$auc
+table <- table(Yhat,testdata$Y)
+acc <- sum(diag(table))/sum(table)
+pre <- table[2,2]/sum(table[,2])
+rec <- table[2,2]/sum(table[2,])
+table <- as.numeric(table)
+mcc <- (table[4]*table[1]+table[2]*table[3])/
+  sqrt((table[4]+table[2])*(table[4]+table[3])*(table[1]+table[2])*(table[1]+table[3]))
+F1 <- 2*pre*rec/(pre+rec)
+evaluation <- c(auc,acc,mcc,F1)
+evaluation
+
+KLIEP <- function(source_data, target_data, sigma = 1, max_iter = 1000, eps = 1e-06) {
+  nS <- nrow(source_data)
+  nT <- nrow(target_data)
+  centers <- target_data
+  b <- nrow(target_data)
+  tol <- eps
+  K_T <- Gaussian_kernel(target_data, centers, sigma)
+  K_S <- Gaussian_kernel(source_data, centers, sigma)
+  objective_function <- function(alpha, K_T) {
+    inner_sum <- K_T %*% alpha  # K_T * alpha
+    sum_log <- sum(log(inner_sum))  
+    return(-sum_log)  
+  }
+  gradient_function <- function(alpha, K_T) {
+    inner_sum <- K_T %*% alpha  # K_T * alpha
+    gradient <- -colSums(K_T / as.vector(inner_sum)) 
+    return(gradient)
+  }
+  constraint_function <- function(alpha, K_S, nS) {
+    constraint_value <- sum(K_S %*% alpha) / nS - 1 
+    return(constraint_value)
+  }
+  constraint_gradient <- function(alpha, K_S, nS) {
+    gradient <- colSums(K_S) / nS 
+    return(gradient)
+  }
+  alpha_init <- rep(1 / b, b)
+  opts <- list("algorithm" = "NLOPT_LD_SLSQP",
+               "xtol_rel" = 1.0e-8)
+  result <- nloptr(x0 = alpha_init, 
+                   eval_f = function(alpha) objective_function(alpha, K_T), 
+                   eval_grad_f = function(alpha) gradient_function(alpha, K_T),
+                   eval_g_eq = function(alpha) constraint_function(alpha, K_S, nS),
+                   eval_jac_g_eq = function(alpha) constraint_gradient(alpha, K_S, nS),
+                   lb = rep(0, b),  
+                   ub = rep(Inf, b), 
+                   opts = opts)
+  w <- result$solution
+  weight_s <- w/sum(w)
+  return(list(weights = weight_s, r = function(x) Gaussian_kernel(x, centers, sigma) %*% weight_s))
+}
+KLIEPfit <- KLIEP(trainx, testx, sigma = 1, max_iter = 1000, eps)
+weights_sss <- KLIEPfit$r(trainx)
+weights_sss <- as.vector((weights_sss-min(weights_sss))/sum(weights_sss-min(weights_sss)))
+#KLIEPlm <- lm(trainy ~ trainx, weights = weight_sss)
+# KMMlm <- lm(trainy ~ trainx, weights = weight_ttt)
+# KMMtry <- KMMlm$fitted.values
+sampled_sss <- sample(1:nrow(traindata), size = nrow(traindata), replace = TRUE, prob = weights_sss)
+resampled_train <- traindata[sampled_sss, ]  
+KLIEP_svm <- ksvm(
+  Y ~ X1 + X2, data = resampled_train,
+  kernel = "polydot",    
+  prob.model = TRUE
+)
+predicted_KLIEP <- as.numeric(predict(KLIEP_svm, testdata,type="response"))
+roc_obj <- roc(testdata$Y,predicted_KLIEP)
+bestp_KLIEP <- roc_obj$thresholds[which.max(roc_obj$sensitivities + roc_obj$specificities - 1)]
+Yhat <- ifelse(predicted_KLIEP > bestp_KLIEP,1,0)
+tpr <- roc_obj$sensitivities
+fpr <- 1 - roc_obj$specificities
+auc <- roc_obj$auc
+table <- table(Yhat,testdata$Y)
+acc <- sum(diag(table))/sum(table)
+pre <- table[2,2]/sum(table[,2])
+rec <- table[2,2]/sum(table[2,])
+table <- as.numeric(table)
+mcc <- (table[4]*table[1]+table[2]*table[3])/
+  sqrt((table[4]+table[2])*(table[4]+table[3])*(table[1]+table[2])*(table[1]+table[3]))
+F1 <- 2*pre*rec/(pre+rec)
+evaluation <- c(auc,acc,mcc,F1)
+evaluation
