@@ -1,0 +1,567 @@
+########## Simulation project - code 1.2 -Tradaboost ###########
+#######<><><><><><><> Last Change: 2025.2.13 10:33 
+#####################################################
+
+rm(list=ls())
+set.seed(123)
+eps <- 1e-6
+
+library(ggplot2)
+library(quadprog)
+library(RSpectra)
+library(kernlab)
+library(nloptr)
+library(kernlab)
+library(Matrix)
+library(matrixcalc)
+library(dplyr)
+library(gridExtra) 
+library(patchwork)
+library(pROC)
+library(ks)      
+library(MASS)  
+library(e1071)  
+library(caret)   
+#library(tidyverse)  
+
+n_sample <- 600
+mu <- c(0, 0)  
+Sigma <- matrix(c(0.5, 0.05,   
+                  0.05, 0.5),  
+                nrow = 2)
+dataX <- mvrnorm(n_sample, mu = mu, Sigma = Sigma)
+X1 <- dataX[, 1]
+X2 <- dataX[, 2]
+epsilon <- rnorm(n_sample, mean=0, sd = 0.2) 
+boundary <- function(x){0.5*sin(pi*x) + 0.2}
+Y <- ifelse(X2 > boundary(X1) + epsilon, 1, 0)
+data <- data.frame(Y = factor(Y), X1 = X1, X2 = X2)
+# ggplot(data, aes(x = X1, y = X2, color = Y)) +
+#   geom_point(size = 1) +
+#   geom_abline(intercept = 0.2, slope = 0.5, linetype = "dashed", color = "black") +
+#   labs(x = "X1", y = "X2") +
+#   theme_minimal()
+
+alpha <- 5 
+weights_Gau <- exp(-alpha*X1^2)
+weights_Log <- 1 / (1 + exp(-alpha * X1))
+weights_L <- exp(alpha*X1)
+weights <- weights_L
+weights <- weights/sum(weights)
+testsize <- 400
+trainsize <- n_sample-testsize
+sample_idx <- sample(1:n_sample, size = testsize, replace = FALSE, prob = weights)
+lab1 <- as.factor(rep(1,testsize))
+lab2 <- as.factor(rep(0,trainsize))
+shifted_data <- data.frame(Label= lab1, X1 = X1[sample_idx], X2 = X2[sample_idx], Y = factor(Y[sample_idx]))
+origin_data <- data.frame(Label= lab2,X1 = X1[-sample_idx], X2 = X2[-sample_idx], Y = factor(Y[-sample_idx]))
+traindata <- as.data.frame(origin_data)
+testdata <- as.data.frame(shifted_data)
+fulldata <- rbind(traindata, testdata)
+
+validsize <- 200
+targetsize <- testsize-validsize
+sourcesize <- n_sample-targetsize-validsize
+resample_idx <- sample(1:testsize, size=validsize, replace=FALSE)
+lab1 <- as.factor(rep(1,targetsize))
+lab2 <- as.factor(rep(0,sourcesize))
+lab3 <- as.factor(rep(-1,validsize))
+target_data <- data.frame(Label= lab1, X1 = testdata$X1[resample_idx], 
+                          X2 = testdata$X2[resample_idx], Y = factor(testdata$Y[resample_idx]))
+source_data <- data.frame(Label= lab2, X1 = X1[-sample_idx], X2 = X2[-sample_idx], Y = factor(Y[-sample_idx]))
+valid_data <- data.frame(Label= lab3, X1 = testdata$X1[-resample_idx], 
+                         X2 = testdata$X2[-resample_idx], Y = factor(testdata$Y[-resample_idx]))
+sourcedata <- as.data.frame(source_data)
+targetdata <- as.data.frame(target_data)
+validdata <- as.data.frame(valid_data)
+usedata <- rbind(sourcedata, targetdata, validdata)
+
+tuneresult_train <- tune(svm, Y ~ X1 + X2, data = sourcedata, kernel = "polynomial",
+                         ranges = list(cost = c(0.01, 0.1, 1, 5, 10),
+                                       gamma=c(0.1,0.5,1),
+                                       degree=c(2,3,4)))
+bestmodel_train <- tuneresult_train$best.model
+predicted_train <- as.numeric(predict(bestmodel_train, validdata,type="response"))
+roc_obj <- roc(validdata$Y,predicted_train)
+bestp_train <- roc_obj$thresholds[which.max(roc_obj$sensitivities + roc_obj$specificities - 1)]
+Yhat <- ifelse(predicted_train > bestp_train,1,0)
+tpr <- roc_obj$sensitivities
+fpr <- 1 - roc_obj$specificities
+auc <- roc_obj$auc
+table <- table(Yhat,validdata$Y)
+acc <- sum(diag(table))/sum(table)
+pre <- table[2,2]/sum(table[,2])
+rec <- table[2,2]/sum(table[2,])
+table <- as.numeric(table)
+mcc <- (table[4]*table[1]+table[2]*table[3])/
+  sqrt((table[4]+table[2])*(table[4]+table[3])*(table[1]+table[2])*(table[1]+table[3]))
+F1 <- 2*pre*rec/(pre+rec)
+evaluation <- c(auc,acc,mcc,F1)
+evaluation
+tuneresult_test <- tune(svm, Y ~ X1 + X2, data = targetdata, kernel = "polynomial",
+                        ranges = list(cost = c(0.01, 0.1, 1, 5, 10),
+                                      gamma=c(0.1,0.5,1),
+                                      degree=c(2,3,4)))
+bestmodel_test <- tuneresult_test$best.model
+predicted_test <- as.numeric(predict(bestmodel_test, validdata,type="response"))
+roc_obj <- roc(validdata$Y,predicted_test)
+bestp_test <- roc_obj$thresholds[which.max(roc_obj$sensitivities + roc_obj$specificities - 1)]
+Yhat <- ifelse(predicted_test > bestp_test,1,0)
+tpr <- roc_obj$sensitivities
+fpr <- 1 - roc_obj$specificities
+auc <- roc_obj$auc
+table <- table(Yhat,validdata$Y)
+acc <- sum(diag(table))/sum(table)
+pre <- table[2,2]/sum(table[,2])
+rec <- table[2,2]/sum(table[2,])
+table <- as.numeric(table)
+mcc <- (table[4]*table[1]+table[2]*table[3])/
+  sqrt((table[4]+table[2])*(table[4]+table[3])*(table[1]+table[2])*(table[1]+table[3]))
+F1 <- 2*pre*rec/(pre+rec)
+evaluation <- c(auc,acc,mcc,F1)
+evaluation
+
+weights_sl <- weights_L[sample_idx]
+weights_sl <- weights_sl[-resample_idx]
+weights_comp <- 1/weights_sl
+weights_comp[is.na(weights_comp)] <- 1
+weights_comp <- as.vector((weights_comp-min(weights_comp))/sum(weights_comp-min(weights_comp)))
+sampled_comp <- sample(1:nrow(sourcedata), size = nrow(sourcedata), replace = TRUE, prob = weights_comp)
+resampled_data <- sourcedata[sampled_comp, ]  
+tuneGrid <- expand.grid(C = c(0.01, 0.1, 1, 5, 10),
+                        scale = c(0.1, 0.5, 1),
+                        degree = c(2, 3, 4))
+tuneresult_comp <- train(Y ~ X1 + X2, data = resampled_data, method = "svmPoly",
+                         tuneGrid = tuneGrid,
+                         trControl = trainControl(method = "cv", number = 5))
+best_parameters <- tuneresult_comp$bestTune
+bestmodel_comp <- ksvm(Y ~ X1 + X2, data = resampled_data, kernel = "polydot",
+                   C = best_parameters$C, scale = best_parameters$scale, degree = best_parameters$degree)
+predicted_comp <- as.numeric(predict(bestmodel_comp, validdata,type="response"))
+roc_obj <- roc(validdata$Y,predicted_comp)
+bestp_comp <- roc_obj$thresholds[which.max(roc_obj$sensitivities + roc_obj$specificities - 1)]
+Yhat <- ifelse(predicted_comp > bestp_comp,1,0)
+tpr <- roc_obj$sensitivities
+fpr <- 1 - roc_obj$specificities
+auc <- roc_obj$auc
+table <- table(Yhat,validdata$Y)
+acc <- sum(diag(table))/sum(table)
+pre <- table[2,2]/sum(table[,2])
+rec <- table[2,2]/sum(table[2,])
+table <- as.numeric(table)
+mcc <- (table[4]*table[1]+table[2]*table[3])/
+  sqrt((table[4]+table[2])*(table[4]+table[3])*(table[1]+table[2])*(table[1]+table[3]))
+F1 <- 2*pre*rec/(pre+rec)
+evaluation <- c(auc,acc,mcc,F1)
+evaluation
+# comp_svm <- ksvm(
+#   Y ~ X1 + X2, data = resampled_data,
+#   kernel = "polydot",   
+#   prob.model = TRUE
+# )
+# tunecontrol <- tune.control(cross = min(5, nrow(resampled_data)))
+# tuneresult_comp <- tune(ksvm, Y ~ X1 + X2, data = resampled_data, kernel = "polydot",
+#   ranges=list(C = c(0.01, 0.1, 1, 10)),tunecontrol=tunecontrol)
+
+trainx <- sourcedata[,c("X1","X2")]
+trainy <- sourcedata$Y
+testx <- targetdata[,c("X1","X2")]
+testy <- targetdata$Y
+validx <- validdata[,c("X1","X2")]
+validy <- validdata$Y
+trainx <- as.matrix(trainx)
+testx <- as.matrix(testx)
+trainy <- as.matrix(trainy)
+testy <- as.matrix(testy)
+validx <- as.matrix(validx)
+validy <- as.matrix(validy)
+
+Gaussian_kernel <- function(x, centers, sigma) {
+  x <- as.matrix(x)
+  centers <- as.matrix(centers)
+  dist <- as.matrix(dist(rbind(x, centers)))[1:nrow(x), (nrow(x) + 1):nrow(rbind(x, centers))]
+  kernel_values <- exp(-dist^2 / (2 * sigma^2))
+  return(kernel_values)
+}
+
+KMM <- function(source_data, target_data, B=10000, sigma=1,eps=1e-06) {
+  source_data <- trainx
+  target_data <- testx
+  B <- 10000
+  sigma <- 1
+  n_s <- nrow(source_data)
+  n_t <- nrow(target_data)
+  Xs <- source_data
+  Xt <- target_data
+  epsilon <- eps
+  # if (sigma==1) {
+  #   sigma <- median(apply(Xs - matrix(colMeans(Xs), n_s, ncol(Xs), byrow=TRUE), 1, function(x) sqrt(sum(x^2))))
+  # }
+  K <- Gaussian_kernel(Xs, Xs, sigma)
+  K <- K+ epsilon * diag(nrow(K))
+  is.positive.definite(K)
+  kappa <- rowSums(Gaussian_kernel(Xs, Xt, sigma))*(n_s / n_t)
+  Dmat <- K
+  dvec <- kappa
+  Amat <- rbind(diag(n_s), -diag(n_s), rep(1, n_s),rep(-1,n_s))
+  bvec <- c(rep(0, n_s), rep(-B, n_s), n_s*(1-0.1),(-1)*n_s*(1+0.1))
+  result <- solve.QP(Dmat, dvec, t(Amat), bvec, meq=0)
+  beta <- result$solution
+  beta_s <- beta/sum(beta)
+  return(beta_s)
+}
+
+tune_KMM <- function(trainx, testx, B = 10000, eps, sigma_values = c(0.01, 0.1, 1, 5, 10)) {
+  auc_values <- numeric(length(sigma_values))
+  for (i in seq_along(sigma_values)) {
+    sigma <- sigma_values[i]
+    model <- KMM(trainx, testx, B = B, sigma = sigma, eps = eps)
+    weights_ttt <- model
+    weights_ttt <- as.vector((weights_ttt-min(weights_ttt))/sum(weights_ttt-min(weights_ttt)))
+    sampled_ttt <- sample(1:nrow(traindata), size = nrow(traindata), replace = TRUE, prob = weights_ttt)
+    resampled_train <- traindata[sampled_ttt, ]  
+    KMM_svm <- ksvm(
+         Y ~ X1 + X2, data = resampled_train,
+         kernel = "polydot",   
+        prob.model = TRUE
+      )
+      predicted_KMM <- as.numeric(predict(KMM_svm, testdata,type="response"))
+      roc_obj <- roc(testdata$Y,predicted_KMM)
+      auc_values[i] <- auc(roc_obj)
+  }
+  best_sigma <- sigma_values[which.max(auc_values)]
+  return(list(best_sigma = best_sigma, best_auc = max(auc_values)))
+}
+
+tunelist <- tune_KMM(trainx, testx, B=10000, eps, sigma_values = c(0.01, 0.1, 1, 5, 10))
+bestsigma <- tunelist$best_sigma
+KMMfit <- KMM(trainx, testx, B=10000, sigma=bestsigma,eps)
+weights_ttt <- KMMfit
+weights_ttt <- as.vector((weights_ttt-min(weights_ttt))/sum(weights_ttt-min(weights_ttt)))
+# KMMlm <- lm(trainy ~ trainx, weights = weight_ttt)
+# KMMtry <- KMMlm$fitted.values
+sampled_ttt <- sample(1:nrow(traindata), size = nrow(traindata), replace = TRUE, prob = weights_ttt)
+resampled_train <- traindata[sampled_ttt, ]  
+KMM_svm <- ksvm(
+  Y ~ X1 + X2, data = resampled_train,
+  kernel = "polydot",    
+  prob.model = TRUE
+)
+predicted_KMM <- as.numeric(predict(KMM_svm, validdata,type="response"))
+roc_obj <- roc(validdata$Y,predicted_KMM)
+bestp_KMM <- roc_obj$thresholds[which.max(roc_obj$sensitivities + roc_obj$specificities - 1)]
+Yhat <- ifelse(predicted_KMM > bestp_KMM,1,0)
+tpr <- roc_obj$sensitivities
+fpr <- 1 - roc_obj$specificities
+auc <- roc_obj$auc
+table <- table(Yhat,validdata$Y)
+acc <- sum(diag(table))/sum(table)
+pre <- table[2,2]/sum(table[,2])
+rec <- table[2,2]/sum(table[2,])
+table <- as.numeric(table)
+mcc <- (table[4]*table[1]+table[2]*table[3])/
+  sqrt((table[4]+table[2])*(table[4]+table[3])*(table[1]+table[2])*(table[1]+table[3]))
+F1 <- 2*pre*rec/(pre+rec)
+evaluation <- c(auc,acc,mcc,F1)
+evaluation
+
+KLIEP <- function(source_data, target_data, sigma = 1, max_iter = 1000, eps = 1e-06) {
+  nS <- nrow(source_data)
+  nT <- nrow(target_data)
+  centers <- target_data
+  b <- nrow(target_data)
+  tol <- eps
+  K_T <- Gaussian_kernel(target_data, centers, sigma)
+  K_S <- Gaussian_kernel(source_data, centers, sigma)
+  objective_function <- function(alpha, K_T) {
+    inner_sum <- K_T %*% alpha  # K_T * alpha
+    sum_log <- sum(log(inner_sum))  
+    return(-sum_log) 
+  }
+  gradient_function <- function(alpha, K_T) {
+    inner_sum <- K_T %*% alpha  # K_T * alpha
+    gradient <- -colSums(K_T / as.vector(inner_sum)) 
+    return(gradient)
+  }
+  constraint_function <- function(alpha, K_S, nS) {
+    constraint_value <- sum(K_S %*% alpha) / nS - 1 
+    return(constraint_value)
+  }
+  constraint_gradient <- function(alpha, K_S, nS) {
+    gradient <- colSums(K_S) / nS 
+    return(gradient)
+  }
+  alpha_init <- rep(1 / b, b)
+  opts <- list("algorithm" = "NLOPT_LD_SLSQP",
+               "xtol_rel" = 1.0e-8)
+  result <- nloptr(x0 = alpha_init, 
+                   eval_f = function(alpha) objective_function(alpha, K_T), 
+                   eval_grad_f = function(alpha) gradient_function(alpha, K_T),
+                   eval_g_eq = function(alpha) constraint_function(alpha, K_S, nS),
+                   eval_jac_g_eq = function(alpha) constraint_gradient(alpha, K_S, nS),
+                   lb = rep(0, b),  # alpha_l >= 0
+                   ub = rep(Inf, b), 
+                   opts = opts)
+  w <- result$solution
+  weight_s <- w/sum(w)
+  return(list(weights = weight_s, r = function(x) Gaussian_kernel(x, centers, sigma) %*% weight_s))
+}
+
+tune_KLIEP <- function(trainx, testx, max_iter = 1000, eps, sigma_values = c(0.01, 0.1, 1, 5, 10)) {
+  auc_values <- numeric(length(sigma_values))
+  for (i in seq_along(sigma_values)) {
+    sigma <- sigma_values[i]
+    model <- KLIEP(trainx, testx, sigma = sigma, max_iter = 1000, eps)
+    weights_sss <- model$r(trainx)
+    weights_sss <- as.vector((weights_sss-min(weights_sss))/sum(weights_sss-min(weights_sss)))
+    sampled_sss <- sample(1:nrow(traindata), size = nrow(traindata), replace = TRUE, prob = weights_sss)
+    resampled_train <- traindata[sampled_sss, ]  
+    KLIEP_svm <- ksvm(
+      Y ~ X1 + X2, data = resampled_train,
+      kernel = "polydot",   
+      prob.model = TRUE
+    )
+    predicted_KLIEP <- as.numeric(predict(KLIEP_svm, testdata,type="response"))
+    roc_obj <- roc(testdata$Y,predicted_KLIEP)
+    auc_values[i] <- auc(roc_obj)
+  }
+  best_sigma <- sigma_values[which.max(auc_values)]
+  return(list(best_sigma = best_sigma, best_auc = max(auc_values)))
+}
+
+tunelist <- tune_KLIEP(trainx, testx, max_iter=1000, eps, sigma_values = c(0.01, 0.1, 1, 5, 10))
+bestsigma <- tunelist$best_sigma
+KLIEPfit <- KLIEP(trainx, testx, sigma = bestsigma, max_iter = 1000, eps)
+weights_sss <- KLIEPfit$r(trainx)
+weights_sss <- as.vector((weights_sss-min(weights_sss))/sum(weights_sss-min(weights_sss)))
+#KLIEPlm <- lm(trainy ~ trainx, weights = weight_sss)
+# KMMlm <- lm(trainy ~ trainx, weights = weight_ttt)
+# KMMtry <- KMMlm$fitted.values
+sampled_sss <- sample(1:nrow(traindata), size = nrow(traindata), replace = TRUE, prob = weights_sss)
+resampled_train <- traindata[sampled_sss, ]  
+KLIEP_svm <- ksvm(
+  Y ~ X1 + X2, data = resampled_train,
+  kernel = "polydot",    # RBF 核
+  prob.model = TRUE
+)
+predicted_KLIEP <- as.numeric(predict(KLIEP_svm, validdata,type="response"))
+roc_obj <- roc(validdata$Y,predicted_KLIEP)
+bestp_KLIEP <- roc_obj$thresholds[which.max(roc_obj$sensitivities + roc_obj$specificities - 1)]
+Yhat <- ifelse(predicted_KLIEP > bestp_KLIEP,1,0)
+tpr <- roc_obj$sensitivities
+fpr <- 1 - roc_obj$specificities
+auc <- roc_obj$auc
+table <- table(Yhat,validdata$Y)
+acc <- sum(diag(table))/sum(table)
+pre <- table[2,2]/sum(table[,2])
+rec <- table[2,2]/sum(table[2,])
+table <- as.numeric(table)
+mcc <- (table[4]*table[1]+table[2]*table[3])/
+  sqrt((table[4]+table[2])*(table[4]+table[3])*(table[1]+table[2])*(table[1]+table[3]))
+F1 <- 2*pre*rec/(pre+rec)
+evaluation <- c(auc,acc,mcc,F1)
+evaluation
+
+TrAdaBoost <- function(source_data, target_data, source_labels, target_labels, iter = 20) {
+  source_size <- nrow(source_data)
+  target_size <- nrow(target_data)
+  total_size <- source_size + target_size
+  full_data <- rbind(source_data, target_data)
+  full_labels <- as.factor(c(source_labels, target_labels))
+  W <- c(rep(1 / (2 * source_size), source_size), rep(1 / (2 * target_size), target_size))
+  models <- list() 
+  alpha <- numeric(iter)  
+  for (t in 1:iter) {
+    W <- W / sum(W)
+    model <- svm(full_data, as.factor(full_labels), probability = TRUE, weights = W)
+    models[[t]] <- model
+    pred <- as.numeric(predict(model, newdata = full_data,type="response"))-1
+    epsilon <- sum(W[(source_size + 1):total_size] * (pred[(source_size + 1):total_size] != target_labels))
+    epsilon <- max(min(epsilon, 0.49), 1e-10)
+    alpha[t] <- 0.5 * log((1 - epsilon) / epsilon)
+    W[pred == full_labels] <- W[pred == full_labels] * exp(-alpha[t])
+    W[pred != full_labels] <- W[pred != full_labels] * exp(alpha[t])
+  }
+  return(list(models = models, alpha = alpha))
+}
+
+TrAdaBoost_predict <- function(models, alpha, new_data) {
+  final_pred <- rep(0, nrow(new_data))
+  for (t in 1:length(models)) {
+    pred <- as.numeric(predict(models[[t]], newdata = new_data,type="response"))-1  
+    final_pred <- final_pred + alpha[t] * (2 * pred - 1)  
+  }
+  return(ifelse(final_pred > 0, 1, 0)) 
+}
+
+trada_model <- TrAdaBoost(trainx, testx, trainy, testy, iter = 20)
+predicted_TAB <- as.numeric(TrAdaBoost_predict(trada_model$models, trada_model$alpha, validx))
+roc_obj <- roc(validdata$Y,predicted_TAB)
+bestp_TAB <- roc_obj$thresholds[which.max(roc_obj$sensitivities + roc_obj$specificities - 1)]
+Yhat <- ifelse(predicted_TAB > bestp_TAB,1,0)
+tpr <- roc_obj$sensitivities
+fpr <- 1 - roc_obj$specificities
+auc <- roc_obj$auc
+table <- table(Yhat,validdata$Y)
+acc <- sum(diag(table))/sum(table)
+pre <- table[2,2]/sum(table[,2])
+rec <- table[2,2]/sum(table[2,])
+table <- as.numeric(table)
+mcc <- (table[4]*table[1]+table[2]*table[3])/
+  sqrt((table[4]+table[2])*(table[4]+table[3])*(table[1]+table[2])*(table[1]+table[3]))
+F1 <- 2*pre*rec/(pre+rec)
+evaluation <- c(auc,acc,mcc,F1)
+evaluation
+
+sourcex <- sourcedata[,c("X1","X2")]
+sourcey <- sourcedata$Y
+targetx <- targetdata[,c("X1","X2")]
+targety <- targetdata$Y
+validx <- validdata[,c("X1","X2")]
+validy <- validdata$Y
+
+cross_entropy <- function(true_labels_onehot, prob_matrix) {
+  prob_matrix[prob_matrix == 0] <- .Machine$double.eps #避免出现log(0)
+  -mean(rowSums(true_labels_onehot * log(prob_matrix)))
+}
+
+svm_cv_intuitive <- function(sourcedata,targetdata,validdata,cost_values,gamma_values,degree_values)
+{
+    sourcex <- sourcedata[,c("X1","X2")]
+    sourcey <- sourcedata$Y
+    targetx <- targetdata[,c("X1","X2")]
+    targety <- targetdata$Y
+    validx <- validdata[,c("X1","X2")]
+    validy <- validdata$Y
+    note_para <- numeric(0)
+    for(cost in cost_values){
+      for(gamma in gamma_values){
+        for(degree in degree_values){
+# tuneresult_target <- tune(svm, Y ~ X1 + X2, data = targetdata, kernel = "polynomial",
+#                         ranges = list(cost = c(0.01, 0.1, 1, 5, 10),
+#                                       gamma=c(0.1,0.5,1),
+#                                       degree=c(2,3,4)))
+# best_parameters <- tuneresult_target$best.parameters
+svm_target <- svm(Y ~ X1 + X2, data = targetdata, kernel = "polynomial",
+                  cost=cost, gamma=gamma,
+                  degree=degree, probability = TRUE)
+predprob_target <- predict(svm_target, targetdata, probability = TRUE)
+probmatrix <- attr(predprob_target, "probabilities")  # 获取概率矩阵
+truelabels <- as.factor(targetdata$Y)
+truelabels_onehot <- model.matrix(~ Y - 1, data = data.frame(Y = truelabels))
+ce_target <- cross_entropy(truelabels_onehot, probmatrix)
+
+tunelist <- tune_KLIEP(sourcex, targetx, max_iter=1000, eps, sigma_values = c(0.01, 0.1, 1, 5, 10))
+bestsigma <- tunelist$best_sigma
+KLIEPfit <- KLIEP(sourcex, targetx, sigma = bestsigma, max_iter = 1000, eps)
+weights_sss <- KLIEPfit$r(trainx)
+weights_sss <- as.vector((weights_sss-min(weights_sss))/sum(weights_sss-min(weights_sss)))
+rho <- weights_sss
+tuneresult_appe <- tune(svm, Y ~ X1 + X2, data = targetdata, kernel = "polynomial",
+                          ranges = list(cost = c(0.01, 0.1, 1, 5, 10),
+                                        gamma=c(0.1,0.5,1),
+                                        degree=c(2,3,4)))
+best_parameters <- tuneresult_appe$best.parameters
+svm_appe <- svm(Y ~ X1 + X2, data = targetdata, kernel = "polynomial",
+                  cost=best_parameters$cost, gamma=best_parameters$gamma,
+                  degree=best_parameters$degree, probability=TRUE)
+pred_source <- predict(svm_appe, sourcedata, probability = TRUE)
+probmatrix <- attr(pred_source, "probabilities") 
+sourcedata$predicted <- ifelse(probmatrix[,2] > 0.5, 1, 0)
+sourcedata$confidence <- ifelse(sourcedata$predicted == 1, probmatrix[,2], 1 - probmatrix[,2])
+sourcedata$error_flag <- ifelse(sourcedata$predicted != sourcedata$Y, 1, 0)
+error_samples <- sourcedata %>% 
+  filter(error_flag == 1) %>%
+  arrange(desc(confidence))
+g <- floor(0.1 * nrow(sourcedata)) 
+topg_errors <- head(error_samples, g)
+sourcedata$eta <- 1
+sourcedata$eta[sourcedata$confidence %in% topg_errors$confidence] <- 0
+eta <- sourcedata$eta
+sourcedata_new <- sourcedata[which(sourcedata$eta==1),]
+# tuneresult_source <- tune(svm, Y ~ X1 + X2, data = sourcedata, kernel = "polynomial",
+#                           ranges = list(cost = c(0.01, 0.1, 1, 5, 10),
+#                                         gamma=c(0.1,0.5,1),
+#                                         degree=c(2,3,4)))
+# best_parameters <- tuneresult_source$best.parameters
+svm_source <- svm(Y ~ X1 + X2, data = sourcedata, kernel = "polynomial",
+                  cost=cost, gamma=gamma,
+                  degree=degree, probability = TRUE)
+predprob_source <- predict(svm_source, sourcedata, probability = TRUE)
+probmatrix <- attr(predprob_source, "probabilities")
+truelabels <- as.factor(sourcedata$Y)
+truelabels_onehot <- model.matrix(~ Y - 1, data = data.frame(Y = truelabels))
+probmatrix[probmatrix == 0] <- .Machine$double.eps 
+ce_source <- -mean(rowSums(eta * rho* truelabels_onehot * log(probmatrix)))
+
+sourcenew <- sourcedata_new[,c("Label","X1","X2","Y")]
+combinedata <- rbind(sourcenew,targetdata)
+tuneresult_mid <- tune(svm, Y ~ X1 + X2, data = combinedata, kernel = "polynomial",
+                       ranges = list(cost = c(0.01, 0.1, 1, 5, 10),
+                                     gamma = c(0.1,0.5,1),
+                                     degree = c(2,3,4)))
+best_parameters <- tuneresult_mid$best.parameters
+svm_mid <- svm(Y ~ X1 + X2, data = combinedata, kernel = "polynomial",
+               cost=best_parameters$cost, gamma=best_parameters$gamma,
+               degree=best_parameters$degree)
+pred_mid <- as.numeric(predict(svm_target, validdata, type="response"))
+validprey <- pred_mid
+valid_pre <- as.data.frame(cbind(validx,validprey))
+colnames(valid_pre) <- c("X1","X2","Y")
+# tuneresult_valid <- tune(svm, Y ~ X1 + X2, data = valid_pre, kernel = "polynomial",
+#                          ranges = list(cost = c(0.01, 0.1, 1, 5, 10),
+#                                        gamma = c(0.1,0.5,1),
+#                                        degree = c(2,3,4)))
+# best_parameters <- tuneresult_valid$best.parameters
+svm_valid <- svm(Y ~ X1 + X2, data = targetdata, kernel = "polynomial",
+                 cost=cost, gamma=gamma,
+                 degree=degree, probability = TRUE)
+predprob_valid <- predict(svm_valid, validdata, probability = TRUE)
+probmatrix <- attr(predprob_valid, "probabilities") 
+truelabels <- as.factor(valid_pre$Y)
+truelabels_onehot <- model.matrix(~ Y - 1, data = data.frame(Y = truelabels))
+ce_valid <- cross_entropy(truelabels_onehot, probmatrix)
+
+lambda_source <- sum(eta*rho)
+lambda_target <- nrow(targetdata)
+lambda_valid <- 0 # sum(validprey)-1
+lambda_source <- lambda_source/(lambda_source+lambda_target+lambda_valid)
+lambda_target <- lambda_target/(lambda_source+lambda_target+lambda_valid)
+lambda_valid <- lambda_valid/(lambda_source+lambda_target+lambda_valid)
+ce_total <- ce_source*lambda_source+ce_target*lambda_target+ce_valid*lambda_valid
+record <- c(cost, gamma, degree, ce_total)
+note_para <- rbind(note_para,record)
+    }
+  }
+}
+bestce <- max(as.numeric(note_para[,4]))
+best_record <- note_para[which(note_para[,4]==bestce),]
+return(best_record)
+}
+
+cost_values <- c(0.1, 1, 10)
+gamma_values <- c(1)
+degree_values <- c(2,3)
+best_params <- svm_cv_intuitive(sourcedata,targetdata,validdata,cost_values, gamma_values, degree_values)
+#best_params <- best_record
+best_params <- as.data.frame(best_params)
+model_intuitive <- svm(Y ~ X1 + X2, data = targetdata, kernel = "polynomial",
+                  cost=as.numeric(best_params[1,]), gamma=as.numeric(best_params[2,]),
+                  degree=as.numeric(best_params[3,]))
+predicted_intui <- as.numeric(predict(model_intuitive,validdata,type="response"))
+roc_obj <- roc(validdata$Y,predicted_intui)
+bestp_intui <- roc_obj$thresholds[which.max(roc_obj$sensitivities + roc_obj$specificities - 1)]
+Yhat <- ifelse(predicted_intui > bestp_intui,1,0)
+tpr <- roc_obj$sensitivities
+fpr <- 1 - roc_obj$specificities
+auc <- roc_obj$auc
+table <- table(Yhat,validdata$Y)
+acc <- sum(diag(table))/sum(table)
+pre <- table[2,2]/sum(table[,2])
+rec <- table[2,2]/sum(table[2,])
+table <- as.numeric(table)
+mcc <- (table[4]*table[1]+table[2]*table[3])/
+  sqrt((table[4]+table[2])*(table[4]+table[3])*(table[1]+table[2])*(table[1]+table[3]))
+F1 <- 2*pre*rec/(pre+rec)
+evaluation <- c(auc,acc,mcc,F1)
+evaluation
