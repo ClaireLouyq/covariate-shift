@@ -1,0 +1,294 @@
+########## Real data analysis - code 2.1 - twosamp detection ###########
+#######<><><><><><><> Last Change: 2025.2.6 11:17
+#####################################################
+
+rm(list=ls())
+set.seed(123)
+eps <- 1e-6
+options(digits = 3)
+
+library(ggplot2)
+library(ggcorrplot)
+library(Matrix)
+library(glmnet)
+library(randomForest)
+library(missForest)
+library(pls)
+library(DataExplorer) 
+library(xgboost)
+library(car)
+library(FSelector)
+library(caret)
+library(class)
+library(e1071)
+library(pROC)
+library(adabag)
+library(readxl)
+library(corrplot)
+library(isotree)
+library(caret)
+library(gbm)
+library(rpart)
+
+sepsis_edit0 <- read.csv("sepsis_edit0.csv")
+#View(sepsis_edit0)
+set.seed(123)
+evaluation <- numeric(0)
+evaluation_twosamp <- numeric(0)
+Ks_total <- seq(0,4,length.out=5) 
+for(Ks in Ks_total) {
+# dim(sepsis_edit0)
+rownum <- dim(sepsis_edit0)[1]
+colnum <- dim(sepsis_edit0)[2]
+Phi <- rep(0,rownum)
+first_hosp_stay1 <- rep(0,rownum)
+first_hosp_stay2 <- rep(0,rownum)
+sex <- rep(0,rownum)
+age <- rep(0,rownum)
+bias <- rep(0,rownum)
+#View(sepsis_edit0)
+phi <- rnorm(rownum,0,1)
+for(i in 1:rownum)
+{
+  age[i] <- sepsis_edit0$admission_age[i]
+  if(sepsis_edit0$gender[i]=="M")
+  {
+    sex[i] <- 2
+  }
+  if(sepsis_edit0$first_hosp_stay[i]=="t")
+  {
+    first_hosp_stay1[i] <- 2
+  }
+  else
+  {
+    first_hosp_stay2[i] <- 1
+  }
+  bias[i] <- -0.05*age[i]+0.03*sex[i]+0.01*first_hosp_stay1[i]+0.01*first_hosp_stay2[i]
+  Phi[i] <- 0.8*(Ks*bias[i]+phi[i])+0.1
+}
+Phi <- as.data.frame(Phi)
+colnames(Phi) <- c("Sampprob")
+sepsis_edit1 <- cbind(Phi,sepsis_edit0)
+#View(sepsis_edit0)
+colnum <- ncol(sepsis_edit1)
+colnum
+q60<-quantile(sepsis_edit1$Sampprob, 0.60)
+source_origin <- sepsis_edit0[which(sepsis_edit1$Sampprob>q60),]
+remain <- sepsis_edit0[-which(sepsis_edit1$Sampprob>q60),]
+##View(remain)
+san <- sample(nrow(remain),0.5*nrow(remain))
+target_origin <- remain[san,]
+test_origin <- remain[-san,]
+evaluation_ts <- read.csv("twosamp_result.csv")
+#write.csv(source_origin, file = paste0("source_Ks",Ks,".csv"), row.names = F)
+#write.csv(target_origin, file = paste0("target_Ks",Ks,".csv"), row.names = F)
+#write.csv(test_origin, file = paste0("test_Ks",Ks,".csv"), row.names = F)
+
+  train_data <- source_origin
+  test_data <- test_origin
+  target_data <- target_origin
+  colnames(train_data)[1] <- 'Y'
+  colnames(test_data)[1] <- 'Y'
+  colnames(target_data)[1] <- 'Y'
+  ##赋值训练和测试数据集,然后处理为数值型
+  train_data$gender<-as.numeric(factor(train_data$gender))
+  train_data$ethnicity<-as.numeric(factor(train_data$ethnicity))
+  train_data$long_title<-as.numeric(factor(train_data$long_title))
+  train_data$first_hosp_stay<-as.numeric(factor(train_data$first_hosp_stay))
+  train_data$first_icu_stay<-as.numeric(factor(train_data$first_icu_stay))
+  train_data <- as.matrix(train_data)
+  test_data$gender<-as.numeric(factor(test_data$gender))
+  test_data$ethnicity<-as.numeric(factor(test_data$ethnicity))
+  test_data$long_title<-as.numeric(factor(test_data$long_title))
+  test_data$first_hosp_stay<-as.numeric(factor(test_data$first_hosp_stay))
+  test_data$first_icu_stay<-as.numeric(factor(test_data$first_icu_stay))
+  test_data <- as.matrix(test_data)
+
+  X.train <- train_data[,-1]
+  Y.train <- train_data[,1]
+  X.test <- test_data[,-1]
+  Y.test <- test_data[,1]
+  Y.prodict <- list()
+  lasso.cv <- cv.glmnet(X.train,Y.train, alpha = 1, family = "binomial", standardize = T, nfolds = 10,intercept = T)
+  lasso.mdl <- glmnet(X.train, Y.train, alpha = 1, standardize = T, nlambda=100, lambda=lasso.cv$lambda.1se,intercept = T, family = "binomial")
+  Y.prodict <- predict(lasso.mdl, newx = X.test, type = "response")
+  roc_obj3 <- roc(Y.test,as.numeric(Y.prodict))
+  bestp <- roc_obj3$thresholds[which.max(roc_obj3$sensitivities + roc_obj3$specificities - 1)]
+  Yhat <- ifelse(Y.prodict > bestp,1,0)
+  tpr3 <- roc_obj3$sensitivities
+  fpr3 <- 1 - roc_obj3$specificities
+  auc3 <- roc_obj3$auc
+  table3 <- table(Yhat,Y.test)
+  acc3 <- sum(diag(table3))/sum(table3)
+  pre3 <- table3[2,2]/sum(table3[,2])
+  rec3 <- table3[2,2]/sum(table3[2,])
+  table3 <- as.numeric(table3)
+  mcc3 <- (table3[4]*table3[1]+table3[2]*table3[3])/
+    sqrt((table3[4]+table3[2])*(table3[4]+table3[3])*(table3[1]+table3[2])*(table3[1]+table3[3]))
+  F1_3 <- 2*pre3*rec3/(pre3+rec3)
+  evaluation <- rbind(evaluation,c(auc3,acc3,mcc3,F1_3))
+# View(evaluation)
+# for(i in c(1:4))
+# {
+#   evaluation[,i] <- evaluation[order(evaluation[,i],decreasing=T),i]
+# }
+# plot(evaluation[,1])
+    source_origin <- source_origin
+    test_origin <- test_origin
+    target_origin <- target_origin
+    sepsis_edit0 <- sepsis_edit0 
+    {
+      rownum <- nrow(sepsis_edit0)
+      colnum <- ncol(sepsis_edit0)
+      percent <- round(0.1*rownum,0)
+      samp_source <- source_origin[sample(nrow(source_origin),percent),]
+      samp_target <- target_origin[sample(nrow(target_origin),percent),]
+      label_source <- rep(0,nrow(samp_source))
+      label_target <- rep(1,nrow(samp_target))
+      source_edit2 <- cbind(label_source,samp_source)
+      target_edit2 <- cbind(label_target,samp_target)
+      colnames(source_edit2)[1] <- 'label'
+      colnames(target_edit2)[1] <- 'label'
+      mixed_indices <- order(rep(1:nrow(source_edit2), 2) + runif(2 * nrow(source_edit2))) 
+      # View(mixed_indices)
+      mixed_samp <- rbind(source_edit2,target_edit2)[mixed_indices, ]
+      # View(mixed_samp)
+    }
+    
+    {
+      colnum_samp <- ncol(mixed_samp)
+      rownum_samp <- nrow(mixed_samp)
+      train_samp <- mixed_samp[c(1:round(0.7*rownum_samp,0)),]
+      test_samp <- mixed_samp[-c(1:round(0.7*rownum_samp,0)),]  
+      {
+        {
+          train_edit <- train_samp[,c(1,3:6,8:11,13:colnum_samp)]
+          test_edit <- test_samp[,c(1,3:6,8:11,13:colnum_samp)]
+          train_data <- train_edit
+          test_data <- test_edit
+          colnames(train_data)[1] <- 'Y'
+          colnames(test_data)[1] <- 'Y'
+          #View(train_data)
+        }
+        {
+          # svm_model <- svm(Species ~ ., data = train_data, kernel = "radial")
+          start_time <- Sys.time()
+          tune_result <- tune(svm, Y ~ ., data = train_data, kernel = "radial",
+                              ranges = list(cost = c(0.01,0.1,1,5), gamma = c(0.1,1,5),
+                                            degree = c(1,3,5)))
+          summary(tune_result)
+          best_model <- tune_result$best.model
+          #View(best_model)
+          end_time <- Sys.time()
+          print(start_time)
+          print(end_time)
+        }
+        {
+          #predicted <- predict(svm_model,test_data,type="response")
+          predicted <- predict(best_model,test_data)
+          #summary(predicted)
+          roc_obj9 <- roc(test_data$Y,predicted)
+          bestp <- roc_obj9$thresholds[which.max(roc_obj9$sensitivities + roc_obj9$specificities - 1)]
+          Yhat <- ifelse(predicted > bestp,1,0)
+          tpr9 <- roc_obj9$sensitivities
+          fpr9 <- 1 - roc_obj9$specificities
+          auc9 <- roc_obj9$auc
+          table9 <- table(Yhat,test_data$Y)
+          acc9 <- sum(diag(table9))/sum(table9)
+          pre9 <- table9[2,2]/sum(table9[,2])
+          rec9 <- table9[2,2]/sum(table9[2,])
+          table9 <- as.numeric(table9)
+          mcc9 <- (table9[4]*table9[1]+table9[2]*table9[3])/
+            sqrt((table9[4]+table9[2])*(table9[4]+table9[3])*(table9[1]+table9[2])*(table9[1]+table9[3]))
+          F1_9 <- 2*pre9*rec9/(pre9+rec9)
+          evaluation_twosamp <- rbind(evaluation_twosamp,c(auc9,acc9,mcc9,F1_9))
+          # View(evaluation_twosamp)
+          # plot_SVM_twosamp <- ggplot() +
+          #   geom_line(aes(x = fpr9, y = tpr9,color="test data")) +
+          #   geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+          #   labs(x = "False Positive Rate", y = "True Positive Rate") +
+          #   ggtitle("ROC Curve of SVM-Radial(Two-samp test)")+
+          #   geom_text(aes(x=0.75,y=0.15),label= paste("AUC of test data=",round(roc_obj9$auc,3),seq=""),cex=4.5)+
+          #   theme_light()
+          # show(plot_SVM_twosamp)
+        }
+      }
+      {
+        {
+          train_data <- train_edit
+          test_data <- test_edit
+          colnames(train_data)[1] <- 'Y'
+          colnames(test_data)[1] <- 'Y'
+          train_save <- train_data 
+          test_save <- test_data
+          train_data$gender<-as.numeric(factor(train_data$gender))
+          #train_data$ethnicity<-as.numeric(factor(train_data$ethnicity))
+          #train_data$long_title<-as.numeric(factor(train_data$long_title))
+          train_data$first_hosp_stay<-as.numeric(factor(train_data$first_hosp_stay))
+          train_data$first_icu_stay<-as.numeric(factor(train_data$first_icu_stay))
+          train_data <- as.matrix(train_data)
+          test_data$gender<-as.numeric(factor(test_data$gender))
+          #test_data$ethnicity<-as.numeric(factor(test_data$ethnicity))
+          #test_data$long_title<-as.numeric(factor(test_data$long_title))
+          test_data$first_hosp_stay<-as.numeric(factor(test_data$first_hosp_stay))
+          test_data$first_icu_stay<-as.numeric(factor(test_data$first_icu_stay))
+          test_data <- as.matrix(test_data)
+        }
+        
+        {
+          start_time <- Sys.time()
+          rd <- 5
+          return <- rep(0,rd)
+          for(j in 1:rd)
+          {
+            stack <- rep(0,round(sqrt(dim(train_data)[1])))
+            for (i in 1:round(sqrt(dim(train_data)[1])))
+            {
+              model <- knn(train = train_data[,-1], test = test_data[,-1],
+                           cl = train_save$Y, k = i)
+              Freq <- table(test_data[,1], model)
+              stack[i] <- 1-sum(diag(Freq))/sum(Freq)
+            }
+            return[j] <- which(stack==min(stack),arr.ind=TRUE)
+          }
+          k <- median(return) 
+          end_time <- Sys.time()
+          print(start_time)
+          print(end_time)
+        }
+        {
+          KNN_model <- knn(train = train_data[,-1], test = test_data[,-1], 
+                           cl = train_save$Y, k=k)
+          roc_obj10 <- roc(test_save$Y,as.numeric(KNN_model))
+          tpr10 <- roc_obj10$sensitivities
+          fpr10 <- 1 - roc_obj10$specificities
+          auc10 <- roc_obj10$auc
+          table10 <- table(test_save$Y,KNN_model)
+          acc10 <- sum(diag(table10))/sum(table10)
+          pre10 <- table10[2,2]/sum(table10[,2])
+          rec10 <- table10[2,2]/sum(table10[2,])
+          table10 <- as.numeric(table10)
+          mcc10 <- (table10[4]*table10[1]+table10[2]*table10[3])/
+            sqrt((table10[4]+table10[2])*(table10[4]+table10[3])*(table10[1]+table10[2])*(table10[1]+table10[3]))
+          F1_10 <- 2*pre10*rec10/(pre10+rec10)
+          #evaluation_twosamp <- data.frame(AUC=auc9,Accuracy=acc9,MCC=mcc9,F1=F1_9)
+          evaluation_twosamp <- rbind(evaluation_twosamp,c(auc10,acc10,mcc10,F1_10))
+          # View(evaluation_twosamp)
+          # plot_KNN_twosamp <- ggplot() +
+          #   geom_line(aes(x = fpr10, y = tpr10,color="test data")) +
+          #   geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+          #   labs(x = "False Positive Rate", y = "True Positive Rate") +
+          #   ggtitle("ROC Curve of KNN(Two samp)")+
+          #   geom_text(aes(x=0.75,y=0.15),label= paste("AUC of test data=",round(roc_obj10$auc,3),seq=""),cex=4.5)+
+          #   theme_light()
+          # show(plot_KNN_twosamp)
+        }
+        
+      }
+    }
+}
+
+#View(evaluation)
+View(evaluation_ts)
+write.csv(round(evaluation,3), file = "GLM—lasso-original.csv")
+write.csv(round(evaluation_ts,3), file = "twosamp_result.csv")
