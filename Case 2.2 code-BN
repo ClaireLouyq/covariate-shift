@@ -1,0 +1,87 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Apr  8 08:35:04 2025
+@author: Claire Lou
+"""
+
+import sys 
+sys.path.append('../input')
+# print(sys.path)
+
+###########################################################################
+### Convolutional Neural Network (CNN) +BN +ODIN
+# Dataset CIFAR-10
+import tensorflow as tf
+from tensorflow import keras
+from keras.datasets import cifar10
+import numpy as np
+#from keras import Sequential
+from keras.layers import Convolution2D, MaxPooling2D, Dense, Flatten, Dropout
+from keras.optimizers import Adam
+import matplotlib.pyplot as plt
+from keras.models import Model
+from keras.layers import Input, BatchNormalization, Activation, Conv2D
+from keras.optimizers.schedules import CosineDecay
+# import pickle
+# import os
+# print(os.listdir('/kaggle/input'))
+
+(train_data, train_label), (test_data, test_label) = cifar10.load_data()
+x_data = train_data.astype('float32') / 255.
+y_data = test_data.astype('float32') / 255.
+def one_hot(label, num_classes):
+    label_one_hot = np.eye(num_classes, dtype=np.float32)[label]
+    return label_one_hot
+num_classes = 10
+train_label = train_label.astype('int32')
+train_label = np.squeeze(train_label)
+x_label = one_hot(train_label, num_classes)
+test_label = test_label.astype('int32')
+y_label = np.squeeze(test_label)
+# print(train_label[0:5])
+# print(x_label[0:5])
+
+##############################################################################
+### CNN Structure (Functional API)
+input_layer = Input(shape=(32, 32, 3), name='input_layer') 
+
+# Unit1
+x = Conv2D(32, kernel_size=(3, 3), activation='relu', padding='same')(input_layer)
+x = Conv2D(32, kernel_size=(3, 3), activation='relu', padding='same')(x)
+x = MaxPooling2D(pool_size=(2, 2), padding='same')(x)
+x = Dropout(0.5)(x)
+
+# Unit2
+x = Conv2D(64, kernel_size=(3, 3), activation='relu', padding='same')(x)
+x = Conv2D(64, kernel_size=(3, 3), activation='relu', padding='same')(x)
+x = MaxPooling2D(pool_size=(2, 2), padding='same')(x)
+x = Dropout(0.5)(x)
+
+# Unit3
+x = Conv2D(128, kernel_size=(3, 3), activation='relu', padding='same')(x)
+x = Conv2D(128, kernel_size=(3, 3), activation='relu', padding='same')(x)
+x = MaxPooling2D(pool_size=(2, 2), padding='same')(x)
+x = Dropout(0.5)(x)
+
+# Unit4
+x = Flatten()(x)
+x = Dense(512, activation='relu')(x)
+x = Dropout(0.5)(x)
+x = Dense(128, activation='relu')(x)
+x = Dropout(0.5)(x)
+output_layer = Dense(10, activation='softmax')(x)
+
+cnn_oracle = Model(inputs=input_layer, outputs=output_layer)
+
+optimizer = Adam(learning_rate=5e-4)
+cnn_oracle.compile(
+    optimizer=optimizer,
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+)
+# print(cnn.summary())
+
+history_cnn = cnn_oracle.fit(x_data,  x_label, epochs=100, batch_size=32, shuffle=True, verbose=1, validation_split=0.1)
+# history_dict = history_cnn.history
+# print(history_dict.keys())
+cnn_oracle.save('model_oracle/cnn.h5')
