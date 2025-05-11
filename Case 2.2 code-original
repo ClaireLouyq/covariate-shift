@@ -1,0 +1,83 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Apr  7 13:59:52 2025
+@author: Claire Lou
+"""
+###电脑配置及性能测试
+'''
+import torch
+print(torch.__version__)         
+print(torch.version.cuda)         
+print(torch.backends.cudnn.version())
+print(torch.cuda.is_available())       
+'''
+####如使用kaggle平台，以下是kaggle的路径纠正
+import sys 
+sys.path.append('../input')
+# print(sys.path)
+
+###########################################################################
+### Convolutional Neural Network (CNN) -- Original structure for reference
+# Dataset CIFAR-10
+import tensorflow as tf
+from tensorflow import keras
+from keras.datasets import cifar10
+import numpy as np
+from keras import Sequential
+from keras.layers import Convolution2D, MaxPooling2D, Dense, Flatten, Dropout
+from keras.optimizers import Adam
+import matplotlib.pyplot as plt
+import pickle
+import os
+print(os.listdir('/kaggle/input'))
+
+(train_data, train_label), (test_data, test_label) = cifar10.load_data()
+x_data = train_data.astype('float32') / 255.
+y_data = test_data.astype('float32') / 255.
+def one_hot(label, num_classes):
+    label_one_hot = np.eye(num_classes, dtype=np.float32)[label]
+    return label_one_hot
+num_classes = 10
+train_label = train_label.astype('int32')
+train_label = np.squeeze(train_label)
+x_label = one_hot(train_label, num_classes)
+test_label = test_label.astype('int32')
+y_label = np.squeeze(test_label)
+# print(train_label[0:5])
+# print(x_label[0:5])
+
+### CNN
+cnn = Sequential()
+#unit1
+cnn.add(Convolution2D(32, kernel_size=[3, 3], input_shape=(32, 32, 3), activation='relu', padding='same'))
+cnn.add(Convolution2D(32, kernel_size=[3, 3], activation='relu', padding='same'))
+cnn.add(MaxPooling2D(pool_size=[2, 2], padding='same'))
+cnn.add(Dropout(0.5))
+
+#unit2
+cnn.add(Convolution2D(64, kernel_size=[3, 3], activation='relu', padding='same'))
+cnn.add(Convolution2D(64, kernel_size=[3, 3], activation='relu', padding='same'))
+cnn.add(MaxPooling2D(pool_size=[2, 2], padding='same'))
+cnn.add(Dropout(0.5))
+
+#unit3
+cnn.add(Flatten())
+cnn.add(Dense(512, activation='relu'))
+cnn.add(Dropout(0.5))
+cnn.add(Dense(128, activation='relu'))
+cnn.add(Dropout(0.5))
+cnn.add(Dense(10, activation='softmax'))
+
+optimizer = Adam(learning_rate=0.001)  # Adam with learning rate = 0.001
+cnn.compile(
+    optimizer=optimizer,               
+    loss='categorical_crossentropy',  
+    metrics=['accuracy']               
+)
+# print(cnn.summary())
+
+history_cnn = cnn.fit(x_data,  x_label, epochs=50, batch_size=32, shuffle=True, verbose=1, validation_split=0.1)
+# history_dict = history_cnn.history
+# print(history_dict.keys())
+
+cnn.save('model/cnn.h5')
