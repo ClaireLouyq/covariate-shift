@@ -1,0 +1,897 @@
+########## Real data analysis - code 2.1 - original ML ###########
+#######<><><><><><><> Last Change: 2025.4.1 11:17
+#####################################################
+
+rm(list=ls())
+set.seed(123)
+eps <- 1e-6
+options(digits = 3)
+
+library(ggplot2)
+library(ggcorrplot)
+library(Matrix)
+library(glmnet)
+library(randomForest)
+library(missForest)
+library(pls)
+library(DataExplorer) 
+library(xgboost)
+library(car)
+library(FSelector)
+library(caret)
+library(class)
+library(e1071)
+library(pROC)
+library(adabag)
+library(readxl)
+library(corrplot)
+library(isotree)
+library(caret)
+library(gbm)
+library(rpart)
+
+#######################################################################
+sepsis_original <- read_excel("Sepsis.xls")
+##View(sepsis_original)
+
+#######################################################################
+baseline <- sepsis_original[,c(3:8)]
+auxiliary <- sepsis_original[,c(9,10,18,19,20)]
+riskfact <- sepsis_original[,c(21:128)]
+
+iso <- isolation.forest(baseline, ndim=2, ntrees = 10, nthreads = 1,
+                        build_imputer=TRUE,
+                        prob_pick_pooled_gain = 1,
+                        ntry = 10)
+baseline <- predict(iso, baseline,type="impute") 
+q1<-quantile(baseline$weight_admit, 0.001)
+q99<-quantile(baseline$weight_admit, 0.999)
+baseline[baseline$weight_admit<q1,]$weight_admit <- q1
+baseline[baseline$weight_admit>q99,]$weight_admit <- q99
+
+q1<-quantile(baseline$height, 0.001)
+q99<-quantile(baseline$height, 0.999)
+baseline[baseline$height<q1,]$height <- q1
+baseline[baseline$height>q99,]$height <- q99
+
+q1<-quantile(baseline$admission_age, 0.001)
+q99<-quantile(baseline$admission_age, 0.999)
+baseline[baseline$admission_age<q1,]$admission_age <- q1
+baseline[baseline$admission_age>q99,]$admission_age <- q99
+
+##View(baseline)
+write.csv(baseline, file = "baseline.csv", row.names = F)
+
+# View(auxiliary)
+# summary(is.na(auxiliary))
+write.csv(auxiliary, file = "auxiliary.csv", row.names = F)
+
+#View(riskfact)
+#summary(is.na(riskfact))
+miss <- function(x){sum(is.na(x))/length(x)}
+colNApercent <- apply(riskfact,2,miss)
+riskfact <- riskfact[,which(colNApercent<0.5)]
+##View(riskfact)
+iso <- isolation.forest(riskfact, ndim=2, ntrees = 10, nthreads = 1,
+                        build_imputer=TRUE,
+                        prob_pick_pooled_gain = 1,
+                        ntry = 10)
+riskfact <- predict(iso, riskfact, type="impute")
+# View(riskfact)
+# summary(riskfact)
+max_values <- apply(riskfact,2,max)
+min_values <- apply(riskfact,2,min)
+mean_values <- apply(riskfact,2,mean)
+outliers <- union(which(max_values>10*mean_values),which(min_values<0.1*mean_values))
+# View(outliers)
+riskfact <- as.data.frame(riskfact)
+# View(riskfact)
+for (i in outliers)
+{
+  tryCatch({q1<-quantile(riskfact[,i], 0.01)
+           q99<-quantile(riskfact[,i], 0.99)
+           riskfact[riskfact[,i]<q1,i] <- q1
+           riskfact[riskfact[,i]>q99,i] <- q99})
+}
+# View(riskfact)
+# summary(riskfact)
+
+n <- 60
+standard <- sepsis_original$hospital_expire_flag
+ttdata <- cbind(standard,riskfact)
+cor1 <- cor(ttdata)
+cor2 <- cor1[order(abs(cor1[,1]),decreasing=TRUE),] 
+b <- as.data.frame(cor2[2:(n+1),1])
+# colnames(riskfact)
+riskfact_edit <- riskfact[,which(rownames(b)%in%colnames(riskfact))]
+# View(riskfact_edit)
+
+M <- cor(riskfact_edit)
+# corrplot(M, type = "upper",tl.cex=0.5)
+# corrplot(corr =M,method = "circle",type = "upper", tl.pos="lt",insig="p-value",sig.level =-1, pch.cex = 0.4)
+# corrplot(M,tl.pos="lt",tl.cex=0.7,tl.col="black",
+#          method = "number",
+#          addCoef.col="grey",
+#          order = "AOE",
+#          number.cex=0.75)
+ei=eigen(cor(riskfact_edit))
+eis=ei$values/sum(ei$values)
+eic=cumsum(eis)
+#plot(ei$values,type="b",lty=2,lwd=2,
+#       xlab="Principle component number",ylab="eigenvalue")
+mypca=prcomp(riskfact_edit,scale=T,rank=20,retx=T)
+riskfact_PCA <-as.matrix(riskfact_edit)%*%as.matrix(ei$vectors[,1:20])
+colnames(riskfact_PCA) <-c("pc1","pc2","pc3","pc4",
+                           "pc5","pc6","pc7","pc8","pc9","pc10",
+                           "pc11","pc12","pc13","pc14","pc15",
+                           "pc16","pc17","pc18","pc19","pc20")
+#View(riskfact_PCA)
+riskfact <-riskfact_PCA
+#View(riskfact)
+write.csv(riskfact, file = "riskfact.csv", row.names = F)
+
+sepsis_edit0 <- cbind(baseline,auxiliary,riskfact)
+# View(sepsis_edit0)
+write.csv(sepsis_edit0, file = "sepsis_edit0.csv", row.names = F)
+
+###############################################################################
+sepsis_edit0 <- read.csv("sepsis_edit0.csv")
+#View(sepsis_edit0)
+normalize <- function(x) {
+  return((x - min(x)) / (max(x) - min(x)))
+}
+colnum <- ncol(sepsis_edit0)
+sepsis_edit0[,c(12:colnum)] <- as.data.frame(lapply(sepsis_edit0[,c(12:colnum)], normalize))
+# View(sepsis_edit0[,c(1,12:31)])
+# M <- cor(sepsis_edit0[,c(1,12:31)])
+# M1 <- M[order(abs(M[,1]),decreasing=TRUE),]
+# View(M1)
+# b
+# corrplot(M, type = "upper",tl.cex=0.5)
+## pc18    pc1    pc4    pc3 
+## -0.182 -0.169 -0.156 -0.151 
+# View(sepsis_edit0)
+set.seed(123)
+# dim(sepsis_edit0)
+#View(sepsis_edit0)
+##<><><><><><><><><>><><>
+Ks_total <- seq(0,2,length.out=3)
+Ks <- 5
+  rownum <- dim(sepsis_edit0)[1]
+  colnum <- dim(sepsis_edit0)[2]
+  Phi <- rep(0,rownum)
+  # first_hosp_stay1 <- rep(0,rownum)
+  # first_hosp_stay2 <- rep(0,rownum)
+  # sex <- rep(0,rownum)
+  # age <- rep(0,rownum)
+  bias <- rep(0,rownum)
+  phi <- rep(0,rownum)
+  for(i in 1:rownum)
+  {
+    # age[i] <- sepsis_edit0$admission_age[i]
+    # if(sepsis_edit0$gender[i]=="M")
+    # {
+    #   sex[i] <- 1
+    # }
+    # if(sepsis_edit0$first_hosp_stay[i]=="t")
+    # {
+    #   first_hosp_stay1[i] <- 1
+    # }
+    # else
+    # {
+    #   first_hosp_stay2[i] <- 1
+    # }
+    bias[i] <- 0.5*sepsis_edit0[i,29]+0.3*sepsis_edit0[i,12]+0.1*sepsis_edit0[i,15]+0.1*sepsis_edit0[i,14]
+    bias[i]  <- Ks*bias[i]*exp(Ks*bias[i])
+  }
+  if(Ks!=0){bias <- normalize(bias)}
+  Phi <- pnorm(bias-0.5,0,1)
+  Phi <- 0.8*Phi+0.1
+  prob <- Phi
+  Phi <- as.data.frame(Phi)
+  colnames(Phi) <- c("Sampprob")
+  # View(sepsis_edit0)
+  colnum <- ncol(sepsis_edit0)
+  # q60<-quantile(sepsis_edit0$Sampprob, 0.60)
+  # source_origin <- sepsis_edit0[which(sepsis_edit0$Sampprob>q60),c(2:colnum)]
+  # remain <- sepsis_edit0[-which(sepsis_edit0$Sampprob>q60),c(2:colnum)]
+  rownum <- nrow(sepsis_edit0)
+  sample_size <- round(0.4*rownum)
+  sampled_indices <- sample(1:rownum,size=sample_size,prob=prob,replace = FALSE)
+  source_origin <- sepsis_edit0[sampled_indices,]
+  remain <- sepsis_edit0[-sampled_indices,]
+  san <- sample(nrow(remain),0.5*nrow(remain),replace=FALSE)
+  target_origin <- remain[san,]
+  test_origin <- remain[-san,]
+write.csv(source_origin, file = "source_Ks10.csv", row.names = F)
+write.csv(target_origin, file = "target_Ks10.csv", row.names = F)
+write.csv(test_origin, file = "test_Ks10.csv", row.names = F)
+
+##########################################################################
+source_origin <- read.csv("source_Ks0.csv")
+test_origin <- read.csv("test_Ks0.csv")
+target_origin <- read.csv("target_Ks0.csv")
+# View(source_origin)
+
+{
+{
+colnum <- ncol(source_origin)
+source_edit1 <- source_origin[,c(1:5,7:10,12:colnum)]
+test_edit1 <- test_origin[,c(1:5,7:10,12:colnum)]
+target_edit1 <- target_origin[,c(1:5,7:10,12:colnum)]
+train_data <- source_edit1
+test_data <- test_edit1
+target_data <- target_edit1
+colnames(train_data)[1] <- 'Y'
+colnames(test_data)[1] <- 'Y'
+colnames(target_data)[1] <- 'Y'
+
+glm_model <- glm(Y~., data = train_data, family = binomial) 
+Y.prodict <- predict(glm_model, train_data, type = "response")
+roc_obj1 <- roc(train_data$Y, as.numeric(Y.prodict))
+bestp <- roc_obj1$thresholds[which.max(roc_obj1$sensitivities + roc_obj1$specificities - 1)]
+Yhat <- ifelse(Y.prodict > bestp,1,0)
+tpr1 <- roc_obj1$sensitivities
+fpr1 <- 1 - roc_obj1$specificities
+auc1 <- roc_obj1$auc
+table1 <- table(Yhat,train_data$Y)
+acc1 <- sum(diag(table1))/sum(table1)
+pre1 <- table1[2,2]/sum(table1[,2])
+rec1 <- table1[2,2]/sum(table1[2,])
+table1 <- as.numeric(table1)
+mcc1 <- (table1[4]*table1[1]+table1[2]*table1[3])/
+  sqrt((table1[4]+table1[2])*(table1[4]+table1[3])*(table1[1]+table1[2])*(table1[1]+table1[3]))
+F1_1 <- 2*pre1*rec1/(pre1+rec1)
+#evaluation_test <- data.frame(AUC=auc1,ACC=acc1,MCC=mcc1,F1=F1_1)
+
+Y.prodict <- predict(glm_model, test_data, type = "response")
+roc_obj2 <- roc(test_data$Y, as.numeric(Y.prodict))
+bestp <- roc_obj2$thresholds[which.max(roc_obj2$sensitivities + roc_obj2$specificities - 1)]
+Yhat <- ifelse(Y.prodict > bestp,1,0)
+tpr2 <- roc_obj2$sensitivities
+fpr2 <- 1 - roc_obj2$specificities
+auc2 <- roc_obj2$auc
+table2 <- table(Yhat,test_data$Y)
+acc2 <- sum(diag(table2))/sum(table2)
+pre2 <- table2[2,2]/sum(table2[,2])
+rec2 <- table2[2,2]/sum(table2[2,])
+table2 <- as.numeric(table2)
+mcc2 <- (table2[4]*table2[1]+table2[2]*table2[3])/
+  sqrt((table2[4]+table2[2])*(table2[4]+table2[3])*(table2[1]+table2[2])*(table2[1]+table2[3]))
+F1_2 <- 2*pre2*rec2/(pre2+rec2)
+evaluation <- data.frame(AUC= auc2,ACC = acc2,MCC=mcc2,F1=F1_2)
+# View(evaluation)
+# evaluation_test <- data.frame(AUC=auc1,ACC=acc1,MCC=mcc1,F1=F1_1)
+# plot_GLM <- ggplot() +
+#   geom_line(aes(x = fpr1, y = tpr1,color="train data")) +
+#   geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+#   geom_line(aes(x = fpr2, y = tpr2,color="test data")) +
+#   geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+#   labs(x = "False Positive Rate", y = "True Positive Rate") +
+#   ggtitle("ROC Curve of GLM with Co-sft")+
+#   geom_text(aes(x=0.75,y=0.15),label= paste("AUC of train data=",round(roc_obj1$auc,3),seq=""),cex=4.5)+
+#   geom_text(aes(x=0.75,y=0.25),label= paste("AUC of test data=",round(roc_obj2$auc,3),seq=""),cex=4.5)+
+#   theme_light()
+# show(plot_GLM)
+}
+
+{
+train_data <- source_origin
+test_data <- test_origin
+target_data <- target_origin
+colnames(train_data)[1] <- 'Y'
+colnames(test_data)[1] <- 'Y'
+colnames(target_data)[1] <- 'Y'
+train_data$gender<-as.numeric(factor(train_data$gender))
+train_data$ethnicity<-as.numeric(factor(train_data$ethnicity))
+train_data$long_title<-as.numeric(factor(train_data$long_title))
+train_data$first_hosp_stay<-as.numeric(factor(train_data$first_hosp_stay))
+train_data$first_icu_stay<-as.numeric(factor(train_data$first_icu_stay))
+train_data <- as.matrix(train_data)
+test_data$gender<-as.numeric(factor(test_data$gender))
+test_data$ethnicity<-as.numeric(factor(test_data$ethnicity))
+test_data$long_title<-as.numeric(factor(test_data$long_title))
+test_data$first_hosp_stay<-as.numeric(factor(test_data$first_hosp_stay))
+test_data$first_icu_stay<-as.numeric(factor(test_data$first_icu_stay))
+test_data <- as.matrix(test_data)
+
+X.train <- train_data[,-1]
+Y.train <- train_data[,1]
+X.test <- test_data[,-1]
+Y.test <- test_data[,1]
+Y.prodict <- list()
+net.cv <- cv.glmnet(X.train,Y.train, alpha = 1, family = "binomial", standardize = T, nfolds = 10,intercept = T)
+net.mdl <- glmnet(X.train, Y.train, alpha = 1, standardize = T, nlambda=100, lambda=net.cv$lambda.1se,intercept = T, family = "binomial")
+Y.prodict <- predict(net.mdl, newx = X.test, type = "response")
+roc_obj3 <- roc(Y.test,as.numeric(Y.prodict))
+bestp <- roc_obj3$thresholds[which.max(roc_obj3$sensitivities + roc_obj3$specificities - 1)]
+Yhat <- ifelse(Y.prodict > bestp,1,0)
+tpr3 <- roc_obj3$sensitivities
+fpr3 <- 1 - roc_obj3$specificities
+auc3 <- roc_obj3$auc
+table3 <- table(Yhat,Y.test)
+acc3 <- sum(diag(table3))/sum(table3)
+pre3 <- table3[2,2]/sum(table3[,2])
+rec3 <- table3[2,2]/sum(table3[2,])
+table3 <- as.numeric(table3)
+mcc3 <- (table3[4]*table3[1]+table3[2]*table3[3])/
+  sqrt((table3[4]+table3[2])*(table3[4]+table3[3])*(table3[1]+table3[2])*(table3[1]+table3[3]))
+F1_3 <- 2*pre3*rec3/(pre3+rec3)
+evaluation <- rbind(evaluation,c(auc3,acc3,mcc3,F1_3))
+# View(evaluation)
+# plot_GLM_Lasso <- ggplot() +
+#   geom_line(aes(x = fpr3, y = tpr3,color="test data")) +
+#   geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+#   labs(x = "False Positive Rate", y = "True Positive Rate") +
+#   ggtitle("ROC Curve of GLM-Lasso with Co-sft")+
+#   geom_text(aes(x=0.75,y=0.15),label= paste("AUC of test data=",round(roc_obj3$auc,3),seq=""),cex=4.5)+
+#   theme_light()
+# show(plot_GLM_Lasso)
+}
+  
+}
+# View(evaluation)
+
+{
+{
+source_edit1 <- source_origin[,c(1:5,7:10,12:colnum)]
+test_edit1 <- test_origin[,c(1:5,7:10,12:colnum)]
+target_edit1 <- target_origin[,c(1:5,7:10,12:colnum)]
+train_data <- source_edit1
+test_data <- test_edit1
+target_data <- target_edit1
+colnames(train_data)[1] <- 'Y'
+colnames(test_data)[1] <- 'Y'
+colnames(target_data)[1] <- 'Y'
+colnum <- ncol(train_data)
+rownum <- nrow(train_data)
+}
+# View(evaluation)
+
+{
+{
+# svm_model <- svm(Species ~ ., data = train_data, kernel = "radial")
+start_time <- Sys.time()
+tune_result <- tune(svm, Y ~ ., data = train_data, kernel = "radial",
+                    ranges = list(cost = c(0.1, 1, 5, 10), gamma = c(0.01, 0.1, 1)))
+best_model <- tune_result$best.model
+end_time <- Sys.time()
+print(start_time)
+print(end_time)
+# > print(start_time)
+# [1] "2024-12-04 13:43:33 CST"
+# > print(end_time)
+# [1] "2024-12-04 13:46:49 CST"
+}
+
+{
+#predicted <- predict(svm_model,test_data,type="response")
+predicted <- predict(best_model, test_data,type="response")
+roc_obj4 <- roc(test_data$Y,predicted)
+bestp <- roc_obj4$thresholds[which.max(roc_obj4$sensitivities + roc_obj4$specificities - 1)]
+Yhat <- ifelse(predicted > bestp,1,0)
+tpr4 <- roc_obj4$sensitivities
+fpr4 <- 1 - roc_obj4$specificities
+auc4 <- roc_obj4$auc
+table4 <- table(Yhat,test_data$Y)
+acc4 <- sum(diag(table4))/sum(table4)
+pre4 <- table4[2,2]/sum(table4[,2])
+rec4 <- table4[2,2]/sum(table4[2,])
+table4 <- as.numeric(table4)
+mcc4 <- (table4[4]*table4[1]+table4[2]*table4[3])/
+  sqrt((table4[4]+table4[2])*(table4[4]+table4[3])*(table4[1]+table4[2])*(table4[1]+table4[3]))
+F1_4 <- 2*pre4*rec4/(pre4+rec4)
+evaluation <- rbind(evaluation,c(auc4,acc4,mcc4,F1_4))
+##View(evaluation)
+# plot_SVM_Radial <- ggplot() +
+#   geom_line(aes(x = fpr4, y = tpr4,color="test data")) +
+#   geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+#   labs(x = "False Positive Rate", y = "True Positive Rate") +
+#   ggtitle("ROC Curve of SVM-Radial with Co-sft")+
+#   geom_text(aes(x=0.75,y=0.15),label= paste("AUC of test data=",round(roc_obj4$auc,3),seq=""),cex=4.5)+
+#   theme_light()
+# show(plot_SVM_Radial)
+}
+}
+
+{
+{
+  # svm_model <- svm(Species ~ ., data = train_data, kernel = "radial")
+  
+  start_time <- Sys.time()
+  tune_result <- tune(svm, Y ~ ., data = train_data, kernel = "polynomial",
+                      ranges = list(cost = c(0.1, 1), gamma = c(0.01, 0.1)))
+  best_model <- tune_result$best.model
+  end_time <- Sys.time()
+  print(start_time)
+  print(end_time)
+  # > print(start_time)
+  # [1] "2024-12-04 13:59:00 CST"
+  # > print(end_time)
+  # [1] "2024-12-04 14:01:08 CST"
+}
+
+{
+  #predicted <- predict(svm_model,test_data,type="response")
+  predicted <- predict(best_model, test_data,type="response")
+  roc_obj5 <- roc(test_data$Y,predicted)
+  bestp <- roc_obj5$thresholds[which.max(roc_obj5$sensitivities + roc_obj5$specificities - 1)]
+  Yhat <- ifelse(predicted > bestp,1,0)
+  tpr5 <- roc_obj5$sensitivities
+  fpr5 <- 1 - roc_obj5$specificities
+  auc5 <- roc_obj5$auc
+  table5 <- table(Yhat,test_data$Y)
+  acc5 <- sum(diag(table5))/sum(table5)
+  pre5 <- table5[2,2]/sum(table5[,2])
+  rec5 <- table5[2,2]/sum(table5[2,])
+  table5 <- as.numeric(table5)
+  mcc5 <- (table5[4]*table5[1]+table5[2]*table5[3])/
+    sqrt((table5[4]+table5[2])*(table5[4]+table5[3])*(table5[1]+table5[2])*(table5[1]+table5[3]))
+  F1_5 <- 2*pre5*rec5/(pre5+rec5)
+  evaluation <- rbind(evaluation,c(auc5,acc5,mcc5,F1_5))
+  ##View(evaluation)
+  # plot_SVM_Polynomial <- ggplot() +
+  #   geom_line(aes(x = fpr5, y = tpr5,color="test data")) +
+  #   geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  #   labs(x = "False Positive Rate", y = "True Positive Rate") +
+  #   ggtitle("ROC Curve of SVM-Polynomial with Co-sft")+
+  #   geom_text(aes(x=0.75,y=0.15),label= paste("AUC of test data=",round(roc_obj5$auc,3),seq=""),cex=4.5)+
+  #   theme_light()
+  # show(plot_SVM_Polynomial)
+}
+
+}
+  
+}
+# View(evaluation)
+
+{
+  {
+    train_data <- source_origin
+    test_data <- test_origin
+    target_data <- target_origin
+    colnames(train_data)[1] <- 'Y'
+    colnames(test_data)[1] <- 'Y'
+    colnames(target_data)[1] <- 'Y'
+    train_data$gender<-as.numeric(factor(train_data$gender))
+    train_data$ethnicity<-as.numeric(factor(train_data$ethnicity))
+    train_data$long_title<-as.numeric(factor(train_data$long_title))
+    train_data$first_hosp_stay<-as.numeric(factor(train_data$first_hosp_stay))
+    train_data$first_icu_stay<-as.numeric(factor(train_data$first_icu_stay))
+    #train_data <- as.matrix(train_data)
+    test_data$gender<-as.numeric(factor(test_data$gender))
+    test_data$ethnicity<-as.numeric(factor(test_data$ethnicity))
+    test_data$long_title<-as.numeric(factor(test_data$long_title))
+    test_data$first_hosp_stay<-as.numeric(factor(test_data$first_hosp_stay))
+    test_data$first_icu_stay<-as.numeric(factor(test_data$first_icu_stay))
+    #test_data <- as.matrix(test_data)
+    train_data$Y <- as.factor(train_data$Y)
+    test_data$Y <- as.factor(test_data$Y)
+    target_data$Y <- as.factor(target_data$Y)
+  }
+
+{
+{
+  ctrl <- trainControl(method = "cv",
+                       number = 5,    
+                       #classProbs = TRUE, 
+                       summaryFunction = defaultSummary) 
+  tune_grid <- expand.grid(cp = seq(0, 0.1, by = 0.01))
+  model <- train(Y ~ .,
+                 data = train_data,               
+                 method = "rpart",          
+                 trControl = ctrl,       
+                 tuneGrid = tune_grid,    
+                 metric = "Accuracy")
+  #model$bestTune$cp
+}
+  
+{
+  des_model <- rpart(Y ~ ., data = train_data, method = "class",cp=model$bestTune$cp,
+        control = rpart.control(maxdepth = 5, minsplit = 10))
+  decision_pred <- predict(des_model, test_data,type="prob")
+  decision_pred <- as.numeric(decision_pred[,1])
+  # View(decision_pred)
+  roc_obj11 <- roc(test_data$Y,decision_pred)
+  bestp_des <- roc_obj11$thresholds[which.max(roc_obj11$sensitivities + roc_obj11$specificities - 1)]
+  if(bestp_des == -Inf){bestp_des <- roc_obj11$thresholds[which.max(roc_obj11$sensitivities + roc_obj11$specificities-1)+1]}
+  Yhat <- ifelse(decision_pred > bestp_des,1,0)
+  tpr11 <- roc_obj11$sensitivities
+  fpr11 <- 1 - roc_obj11$specificities
+  auc11 <- roc_obj11$auc
+  table11 <- table(Yhat,test_data$Y)
+  acc11 <- sum(diag(table11))/sum(table11)
+  pre11 <- table11[2,2]/sum(table11[,2])
+  rec11 <- table11[2,2]/sum(table11[2,])
+  table11 <- as.numeric(table11)
+  mcc11 <- (table11[4]*table11[1]+table11[2]*table11[3])/
+    sqrt((table11[4]+table11[2])*(table11[4]+table11[3])*(table11[1]+table11[2])*(table11[1]+table11[3]))
+  F1_11 <- 2*pre11*rec11/(pre11+rec11)
+  evaluation <- rbind(evaluation,c(auc11,acc11,mcc11,F1_11))
+}
+}
+
+{
+{
+  tune_grid <- expand.grid(
+    #ntree = c(100, 200, 300, 400, 500),
+    mtry = c(2, 3, 4)
+  )
+  ctrl <- trainControl(
+    method = "cv", 
+    number = 5,   
+    verboseIter = FALSE 
+  )
+  rf_cv <- train(
+    Y ~ ., 
+    data = train_data, 
+    method = "rf",  
+    trControl = ctrl,  
+    tuneGrid = tune_grid,  
+    importance = TRUE  
+  )
+}
+
+{
+  train_data$Y <- as.numeric(train_data$Y)-1
+  test_data$Y <- as.numeric(test_data$Y)-1
+  target_data$Y <- as.numeric(target_data$Y)-1
+  rf_model <- randomForest(
+    Y ~ ., 
+    data = train_data, 
+    ntree = 200,  
+    mtry = rf_cv$bestTune$mtry,    
+    importance = TRUE
+  )
+  Y_rf <- predict(rf_model, test_data, n.trees = 200, type = "response")
+  roc_obj10 <- roc(test_data$Y,as.numeric(Y_rf))
+  bestp_rf <- roc_obj10$thresholds[which.max(roc_obj10$sensitivities + roc_obj10$specificities - 1)]
+  Yhat <- ifelse(Y_rf > bestp_rf,1,0)
+  tpr10 <- roc_obj10$sensitivities
+  fpr10 <- 1 - roc_obj10$specificities
+  auc10 <- roc_obj10$auc
+  table10 <- table(Yhat,test_data$Y)
+  acc10 <- sum(diag(table10))/sum(table10)
+  pre10 <- table10[2,2]/sum(table10[,2])
+  rec10 <- table10[2,2]/sum(table10[2,])
+  table10 <- as.numeric(table10)
+  mcc10 <- (table10[4]*table10[1]+table10[2]*table10[3])/
+    sqrt((table10[4]+table10[2])*(table10[4]+table10[3])*(table10[1]+table10[2])*(table10[1]+table10[3]))
+  F1_10 <- 2*pre10*rec10/(pre10+rec10)
+  evaluation <- rbind(evaluation,c(auc10,acc10,mcc10,F1_10))
+}
+}
+  
+{
+{
+  param_grid <- expand.grid(
+    n.trees = c(50, 100, 150),    
+    interaction.depth = c(3, 5),   
+    shrinkage = c(0.01, 0.1),    
+    n.minobsinnode = c(10)       
+  )
+  ctrl <- trainControl(
+    method = "cv",      
+    number = 5,         
+    #summaryFunction = twoClassSummary, 
+    #classProbs = TRUE, 
+    verboseIter = FALSE 
+  )
+  train_data$Y <- as.factor(train_data$Y)
+  test_data$Y <- as.factor(test_data$Y)
+  target_data$Y <- as.factor(target_data$Y)
+  gbm_cv <- train(
+    Y ~ .,                
+    data = train_data,          
+    method = "gbm",        
+    distribution = "bernoulli", 
+    tuneGrid = param_grid,      
+    trControl = ctrl,         
+    metric = "Accuracy"            
+  )
+}
+  
+{
+  train_data$Y <- as.numeric(train_data$Y)-1
+  test_data$Y <- as.numeric(test_data$Y)-1
+  target_data$Y <- as.numeric(target_data$Y)-1
+  gbm_model <- gbm(
+    Y ~ .,               
+    data = train_data,               
+    distribution = "bernoulli", 
+    n.trees = gbm_cv$bestTune$n.trees,         
+    interaction.depth = gbm_cv$bestTune$interaction.depth,  
+    shrinkage = gbm_cv$bestTune$shrinkage,   
+    n.minobsinnode = gbm_cv$bestTune$n.minobsinnode, 
+    verbose = FALSE        
+  )
+  Y_gbm <- predict(gbm_model, test_data,n.trees = gbm_cv$bestTune$n.trees, type = "response")
+  roc_obj9 <- roc(test_data$Y,as.numeric(Y_gbm))
+  bestp <- roc_obj9$thresholds[which.max(roc_obj9$sensitivities + roc_obj9$specificities - 1)]
+  Yhat <- ifelse(Y_gbm > bestp,1,0)
+  tpr9 <- roc_obj9$sensitivities
+  fpr9 <- 1 - roc_obj9$specificities
+  auc9 <- roc_obj9$auc
+  table9 <- table(Yhat,test_data$Y)
+  acc9 <- sum(diag(table9))/sum(table9)
+  pre9 <- table9[2,2]/sum(table9[,2])
+  rec9 <- table9[2,2]/sum(table9[2,])
+  table9 <- as.numeric(table9)
+  mcc9 <- (table9[4]*table9[1]+table9[2]*table9[3])/
+    sqrt((table9[4]+table9[2])*(table9[4]+table9[3])*(table9[1]+table9[2])*(table9[1]+table9[3]))
+  F1_9 <- 2*pre9*rec9/(pre9+rec9)
+  evaluation <- rbind(evaluation,c(auc9,acc9,mcc9,F1_9))
+}
+}
+
+}
+# View(evaluation)
+
+{
+train_data <- source_origin
+test_data <- test_origin
+target_data <- target_origin
+colnames(train_data)[1] <- 'Y'
+colnames(test_data)[1] <- 'Y'
+colnames(target_data)[1] <- 'Y'
+train_save <- train_data 
+test_save <- test_data
+train_data$gender<-as.numeric(factor(train_data$gender))
+train_data$ethnicity<-as.numeric(factor(train_data$ethnicity))
+train_data$long_title<-as.numeric(factor(train_data$long_title))
+train_data$first_hosp_stay<-as.numeric(factor(train_data$first_hosp_stay))
+train_data$first_icu_stay<-as.numeric(factor(train_data$first_icu_stay))
+train_data <- as.matrix(train_data)
+test_data$gender<-as.numeric(factor(test_data$gender))
+test_data$ethnicity<-as.numeric(factor(test_data$ethnicity))
+test_data$long_title<-as.numeric(factor(test_data$long_title))
+test_data$first_hosp_stay<-as.numeric(factor(test_data$first_hosp_stay))
+test_data$first_icu_stay<-as.numeric(factor(test_data$first_icu_stay))
+test_data <- as.matrix(test_data)
+
+start_time <- Sys.time()
+rd <- 5
+return <- rep(0,rd)
+for(j in 1:rd)
+{
+ stack <- rep(0,round(sqrt(dim(train_data)[1])))
+ for (i in 1:round(sqrt(dim(train_data)[1])))
+ {
+  model <- knn(train = train_data[,-1], test = test_data[,-1],
+                     cl = train_save$Y, k = i)
+  Freq <- table(test_data[,1], model)
+  stack[i] <- 1-sum(diag(Freq))/sum(Freq)
+ }
+ return[j] <- which(stack==min(stack),arr.ind=TRUE)
+}
+k <- median(return) 
+##View(k)
+end_time <- Sys.time()
+print(start_time)
+print(end_time)
+
+KNN_model <- knn(train = train_data[,-1], test = test_data[,-1], 
+             cl = train_save$Y, k=k)
+roc_obj6 <- roc(test_save$Y,as.numeric(KNN_model))
+tpr6 <- roc_obj6$sensitivities
+fpr6 <- 1 - roc_obj6$specificities
+auc6 <- roc_obj6$auc
+table6 <- table(test_save$Y,KNN_model)
+acc6 <- sum(diag(table6))/sum(table6)
+pre6 <- table6[2,2]/sum(table6[,2])
+rec6 <- table6[2,2]/sum(table6[2,])
+table6 <- as.numeric(table6)
+mcc6 <- (table6[4]*table6[1]+table6[2]*table6[3])/
+  sqrt((table6[4]+table6[2])*(table6[4]+table6[3])*(table6[1]+table6[2])*(table6[1]+table6[3]))
+F1_6 <- 2*pre6*rec6/(pre6+rec6)
+evaluation <- rbind(evaluation,c(auc6,acc6,mcc6,F1_6))
+##View(evaluation)
+# plot_KNN <- ggplot() +
+#   geom_line(aes(x = fpr6, y = tpr6,color="test data")) +
+#   geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+#   labs(x = "False Positive Rate", y = "True Positive Rate") +
+#   ggtitle("ROC Curve of KNN with Co-sft")+
+#   geom_text(aes(x=0.75,y=0.15),label= paste("AUC of test data=",round(roc_obj6$auc,3),seq=""),cex=4.5)+
+#   theme_light()
+# show(plot_KNN)
+}
+View(evaluation)
+
+{
+{
+{
+train_data <- source_edit1
+test_data <- test_edit1
+target_data <- target_edit1
+colnames(train_data)[1] <- 'Y'
+colnames(test_data)[1] <- 'Y'
+colnames(target_data)[1] <- 'Y'
+train_data$Y <- as.factor(train_data$Y)
+test_data$Y <- as.factor(test_data$Y)
+target_data$Y <- as.factor(target_data$Y)
+}
+
+{
+start_time <- Sys.time()
+error <- as.numeric()
+for(i in 1:50){
+  data.adaboost <- boosting(Y~., data=train_data, mfinal=i)
+  data.pred <- predict.boosting(data.adaboost,newdata = test_data)
+  error[i] <- data.pred$error
+}
+error <- as.data.frame(error)
+mfinal <- which(error==min(error),arr.ind=TRUE)[1]
+# p <- ggplot(error,aes(x=1:50,y=error))+
+#   geom_line(colour="red", linetype="dashed",size = 1)+
+#   geom_point()+
+#   ylim(0.13,0.45) +
+#   xlab("the number of basic classifiers")+
+#   theme_bw()+
+#   theme(panel.grid = element_blank())+
+#   theme(axis.title = element_text(face = "bold"))
+# p
+end_time <- Sys.time()
+print(start_time)
+print(end_time)
+}
+
+{
+Adamodel <- boosting(Y ~ ., data = train_data, mfinal = mfinal, boos = TRUE)
+pred <- predict.boosting(Adamodel,newdata = test_data,type="response")
+probs <- as.numeric(pred$prob[,1])
+roc_obj7 <- roc(test_data$Y,probs)
+bestp <- roc_obj7$thresholds[which.max(roc_obj7$sensitivities + roc_obj7$specificities - 1)]
+Yhat <- ifelse(probs < bestp,1,0) 
+tpr7 <- roc_obj7$sensitivities
+fpr7 <- 1 - roc_obj7$specificities
+auc7 <- roc_obj7$auc
+table7 <- table(Yhat,test_data$Y)
+acc7 <- sum(diag(table7))/sum(table7)
+pre7 <- table7[2,2]/sum(table7[,2])
+rec7 <- table7[2,2]/sum(table7[2,])
+table7 <- as.numeric(table7)
+mcc7 <- (table7[4]*table7[1]+table7[2]*table7[3])/
+  sqrt((table7[4]+table7[2])*(table7[4]+table7[3])*(table7[1]+table7[2])*(table7[1]+table7[3]))
+F1_7 <- 2*pre7*rec7/(pre7+rec7)
+evaluation <- rbind(evaluation,c(auc7,acc7,mcc7,F1_7))
+# View(c(auc7,acc7,mcc7,F1_7))
+# plot_AdaBoost <- ggplot() +
+#   geom_line(aes(x = fpr7, y = tpr7,color="test data")) +
+#   geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+#   labs(x = "False Positive Rate", y = "True Positive Rate") +
+#   ggtitle("ROC Curve of AdaBoost with Co-sft")+
+#   geom_text(aes(x=0.75,y=0.15),label= paste("AUC of test data=",round(roc_obj7$auc,3),seq=""),cex=4.5)+
+#   theme_light()
+# show(plot_AdaBoost)
+}
+}
+
+{
+  {
+    train_data <- source_origin
+    test_data <- test_origin
+    target_data <- target_origin
+    colnames(train_data)[1] <- 'Y'
+    colnames(test_data)[1] <- 'Y'
+    colnames(target_data)[1] <- 'Y'
+    rownum <- nrow(train_data)
+    colnum <- ncol(train_data)
+    train_data$gender<-as.numeric(factor(train_data$gender))
+    train_data$ethnicity<-as.numeric(factor(train_data$ethnicity))
+    train_data$long_title<-as.numeric(factor(train_data$long_title))
+    train_data$first_hosp_stay<-as.numeric(factor(train_data$first_hosp_stay))
+    train_data$first_icu_stay<-as.numeric(factor(train_data$first_icu_stay))
+    test_data$gender<-as.numeric(factor(test_data$gender))
+    test_data$ethnicity<-as.numeric(factor(test_data$ethnicity))
+    test_data$long_title<-as.numeric(factor(test_data$long_title))
+    test_data$first_hosp_stay<-as.numeric(factor(test_data$first_hosp_stay))
+    test_data$first_icu_stay<-as.numeric(factor(test_data$first_icu_stay))
+  }
+
+  {
+  library("xgboost")
+  library("Matrix")
+  train_matrix <- sparse.model.matrix(Y ~ .-1, data = train_data)
+  test_matrix <- sparse.model.matrix(Y ~ .-1, data = test_data)
+  train_label <- as.numeric(train_data$Y)
+  test_label <-  as.numeric(test_data$Y)
+  train_fin <- list(data=train_matrix,label=train_label) 
+  test_fin <- list(data=test_matrix,label=test_label) 
+  dtrain <- xgb.DMatrix(data = train_fin$data, label = train_fin$label) 
+  dtest <- xgb.DMatrix(data = test_fin$data, label = test_fin$label)
+  }
+
+  {
+  # start_time <- Sys.time()
+  # folds <- createFolds(y=train_data[,1],k=10)
+  # train_data[,1] <- as.factor(train_data[,1])
+  # AUC <- array(1:10)
+  # ACC <- array(1:10)
+  # f1 <- array(1:10)
+  # precision <- array(1:10)
+  # recall <- array(1:10)
+  # PROBS <- c()
+  # TRUES <- c()
+  # YHAT <- c()
+  # time <- c()
+  # param_grid <- expand.grid(eta = c(0.1,0.2,0.3),
+  #                           gamma = c(0.01,0.1,1),
+  #                           max_depth=c(2,4,6),
+  #                           nround = c(2,5,10,50))
+  # results2 <- matrix(NA, nrow = nrow(param_grid), ncol = 7)
+  # colnames(results2) <- c("eta","gamma","max_depth",'nround',"ACC","AUC",'F1')
+  # for (i in 1:nrow(param_grid)) {
+  #   eta <- param_grid$eta[i]
+  #   gamma <- param_grid$gamma[i]
+  #   max_depth <- param_grid$max_depth[i]
+  #   nround <- param_grid$nround[i]
+  #   for (k in 1:10) {
+  #     train_data<- train_data[-folds[[k]],] 
+  #     test_data<- train_data[folds[[k]],]
+  #     any(is.na(test_data[,1]))
+  #     summary(test_data[,1])
+  #     train_data0 <- as.matrix(train_data[,-1])
+  #     train_labels <- as.numeric(train_data[,1])-1
+  #     test_data0 <- as.matrix(test_data[,-1])
+  #     test_labels <- as.numeric(test_data[,1])-1
+  #     dtrain <- xgb.DMatrix(train_data0, label = train_labels)
+  #     dtest <- xgb.DMatrix(test_data0, label = test_labels)
+  #     glm_full <- xgboost(data=dtrain, nround=nround,objective='binary:logistic',eta=eta,gamma=gamma,max_depth=max_depth,verbose = 0)
+  #     probs <- predict(glm_full,dtest,type = "prob")
+  #     roc1 <- roc(as.numeric(test_data[,1])-1,probs)
+  #     bestp <- roc1$thresholds[which.max(roc1$sensitivities + roc1$specificities - 1)]
+  #     Yhat <- ifelse(probs > bestp,1,0)
+  #     AUC[k] <- auc(as.numeric(test_data[,1])-1,probs)
+  #     ACC[k] <- sum(Yhat == test_data[,1]) / length(test_data[,1])
+  #     precision[k] <- sum(Yhat == 1 & test_data[,1] == 1) / sum(Yhat == 1) 
+  #     recall[k] <- sum(Yhat == 1 & test_data[,1] == 1) / sum(test_data[,1] ==1)
+  #     f1[k] <- 2 * precision[k] * recall[k] / (precision[k] + recall[k])
+  #     PROBS <- c(PROBS,probs)
+  #     TRUES <- c(TRUES,test_data[,1])
+  #     YHAT <- c(YHAT,Yhat)
+  #   }
+  #   meanaccuracy <- mean(ACC)
+  #   meanAUC <- mean(AUC)
+  #   meanF1 <- mean(f1)
+  #   results2[i, ] <- c(eta,gamma,max_depth, nround,meanaccuracy,meanAUC,meanF1)
+  #   print(i)
+  # }
+  # end_time <- Sys.time()
+  # print(start_time)
+  # print(end_time)
+  }
+  
+  {
+  xgb <- xgboost(data = dtrain, max_depth=22, eta=0.5,gamma=1e-5,  
+                 objective='binary:logistic', nround=100)
+  pre_xgb <- round(predict(xgb,newdata = dtest))
+  roc_obj8 <- roc(test_label,as.numeric(pre_xgb))
+  tpr8 <- roc_obj8$sensitivities
+  fpr8 <- 1 - roc_obj8$specificities
+  auc8 <- roc_obj8$auc
+  table8 <- table(test_save$Y,KNN_model)
+  acc8 <- sum(diag(table8))/sum(table8)
+  pre8 <- table8[2,2]/sum(table8[,2])
+  rec8 <- table8[2,2]/sum(table8[2,])
+  table8 <- as.numeric(table8)
+  mcc8 <- (table8[4]*table8[1]+table8[2]*table8[3])/
+    sqrt((table8[4]+table8[2])*(table8[4]+table8[3])*(table8[1]+table8[2])*(table8[1]+table8[3]))
+  F1_8 <- 2*pre8*rec8/(pre8+rec8)
+  evaluation <- rbind(evaluation,c(auc8,acc8,mcc8,F1_8))
+  # View(evaluation)
+  # plot_XGBoost <- ggplot() +
+  #   geom_line(aes(x = fpr8, y = tpr8,color="test data")) +
+  #   geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  #   labs(x = "False Positive Rate", y = "True Positive Rate") +
+  #   ggtitle("ROC Curve of XGBoost with Co-sft")+
+  #   geom_text(aes(x=0.75,y=0.15),label= paste("AUC of test data=",round(roc_obj8$auc,3),seq=""),cex=4.5)+
+  #   theme_light()
+  # show(plot_XGBoost)
+  }
+}
+}
+# View(evaluation)
+
+##round(file,3)
+# View(evaluation)
+write.csv(round(evaluation,3), file = "evaluation_without_cosft_Ks10.csv")
