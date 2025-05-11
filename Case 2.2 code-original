@@ -77,6 +77,38 @@ cnn.compile(
 # print(cnn.summary())
 
 history_cnn = cnn.fit(x_data,  x_label, epochs=50, batch_size=32, shuffle=True, verbose=1, validation_split=0.1)
+
+### Visualization
+plt.figure(1)
+plt.plot(np.array(history_cnn.history['loss']))
+plt.plot(np.array(history_cnn.history['val_loss']))
+plt.xlabel('Epoch')
+plt.ylabel('Train loss')
+plt.legend(['loss', 'val_loss'])
+plt.savefig("/kaggle/working/output_Loss.png") 
+plt.show()
+plt.figure(2)
+plt.plot(np.array(history_cnn.history['accuracy']))
+plt.plot(np.array(history_cnn.history['val_accuracy']))
+plt.xlabel('Epoch')
+plt.ylabel('Train accuracy')
+plt.legend(['accuracy', 'val_accuracy'])
+plt.savefig("/kaggle/working/output_Accuracy.png") 
+plt.show()
+
+cnn = keras.models.load_model('model/cnn.h5')
+test_out = cnn.predict(y_data)
+
+num = 0
+total_num = y_data.shape[0]
+
+for i in range(total_num):
+    predict = np.argmax(test_out[i])
+    if predict == y_label[i]:
+        num += 1
+accuracy = num / total_num
+print(accuracy)
+
 # history_dict = history_cnn.history
 # print(history_dict.keys())
 
