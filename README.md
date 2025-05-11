@@ -1,6 +1,6 @@
 # Simulation and real data analysis of methods identifying and processing covariate shift
 
-This repository stores all the codes involved in Claire Lou's undergraduate thesis, ‘Definition, Identification, Detection and Correction of Covariate Shift Problem in Transfer learning’. It consists of three parts: the simulation code, the real data analysis code and the real data analysis case datasets, which corresponds to the content of Chapter 5 of the thesis. As I am new to coding, errors and omissions are inevitable, so I sincerely urge all readers to take note of this and kindly welcome comments for correction.
+This repository stores all the codes involved in Claire Lou's undergraduate thesis, ‘Definition, Identification, Detection and Correction of Covariate Shift Problem in Transfer learning’. It consists of three parts: the simulation code, the real data analysis code and the real data analysis case datasets, which corresponds to the content of Chapter 5 of the thesis. As errors and omissions are inevitable, all users are sincerely urged to take note of this and the author kindly welcome comments for correction.
 
 ## Part 1: Simulation of covariate shift cases with processing methods  (all R)
 
