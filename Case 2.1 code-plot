@@ -1,0 +1,60 @@
+####################################################################
+library(ggplot2)
+library(reshape2)
+data <- read.csv("twosamp_result.csv")
+set.seed(123)
+data_SVM <- as.data.frame(data[c(1,3,5,7,9),])
+data_KNN <- as.data.frame(data[c(2,4,6,8,10),])
+#View(data_SVM)
+data_SVM$X <- c(0,1,2,3,4)
+colnames(data_SVM) <- c("Ks","AUC","ACC","MCC","F1")
+longdata_SVM <- melt(data_SVM, id.vars = "Ks", variable.name = "Evaluation", value.name = "Value")
+
+ggplot(longdata_SVM, aes(x = Ks, y = Value, fill = Evaluation)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.8) +  
+  geom_text(aes(label = round(Value, 2),fontface="bold"),color="black", size = 3.5, position = position_dodge(width = 0.8), vjust = -0.7) +  
+  scale_fill_manual(name="评价指标",values = c("AUC" = "#FFA07A", "ACC" = "#FFDAB9", 
+                               "MCC" = "#87CEEB", "F1" = "#ADD8E6")) +  
+  labs(
+    title = "基于SVM模型的两样本检验法检验结果",  
+    x = "Ks值",  
+    y = "指标值",  
+    fill = "Evaluation"  
+  ) +
+  coord_cartesian(ylim = c(0.25, 1)) +  
+  theme_bw() +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 1), 
+    text = element_text(size = 12, face = "bold"),
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(size = 12, face = "bold"),  
+    axis.title = element_text(size = 12, face = "bold"),  
+    legend.title = element_text(size = 12, face = "bold"),  
+    legend.text = element_text(size = 12, face = "bold") 
+  )
+
+# #View(data_KNN)
+# data_KNN$X <- c(0,1,2,3,4)
+# colnames(data_KNN) <- c("Ks","AUC","ACC","MCC","F1")
+# longdata_KNN <- melt(data_KNN, id.vars = "Ks", variable.name = "Evaluation", value.name = "Value")
+# ggplot(longdata_KNN, aes(x = Ks, y = Value, fill = Evaluation)) +
+#   geom_bar(stat = "identity", position = "dodge", width = 0.8) +  
+#   geom_text(aes(label = round(Value, 2),fontface="bold"),color="black", size = 3, position = position_dodge(width = 0.8), vjust = -0.7) +  
+#   scale_fill_manual(values = c("AUC" = "#FFA07A", "ACC" = "#FFDAB9", 
+#                                "MCC" = "#87CEEB", "F1" = "#ADD8E6")) +  
+#   labs(
+#     title = "Twosamp-Test Results (KNN base)",  
+#     x = "Ks", 
+#     y = "Value",  
+#     fill = "Evaluation"  
+#   ) +
+#   coord_cartesian(ylim = c(0.25, 1)) +  
+#   theme_bw() +
+#   theme(
+#     panel.border = element_rect(colour = "black", fill = NA, linewidth = 1), 
+#     panel.grid.major = element_blank(),  
+#     panel.grid.minor = element_blank(),
+#     text = element_text(size = 12, face="bold"))
+
+
