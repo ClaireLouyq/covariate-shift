@@ -1,0 +1,411 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Apr 8 09:36:27 2025
+@author: Claire Lou
+With Energy Score inserted
+"""
+
+###########################################################################
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, MaxPooling2D, Dense, Flatten, Activation, Lambda
+from tensorflow.keras.models import Model
+from tensorflow.keras.optimizers import Adam
+from sklearn.metrics import roc_auc_score, roc_curve
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+from sklearn.metrics import precision_recall_curve, average_precision_score
+from scipy.special import logsumexp
+np.random.seed(123)
+tf.random.set_seed(123)
+
+(x_id_train, y_id_train), (x_id_test, y_id_test) = tf.keras.datasets.cifar10.load_data()
+(x_ood_train, _), (x_ood_test, _) = tf.keras.datasets.cifar100.load_data()
+def normalize(x):
+    x = x.astype('float32') / 255.0
+    mean = np.array([0.4914, 0.4822, 0.4465])
+    std = np.array([0.2470, 0.2435, 0.2616])
+    return (x - mean) / std
+x_id_train, y_id_train = normalize(x_id_train), tf.keras.utils.to_categorical(y_id_train, 10)
+x_id_test = normalize(x_id_test)
+x_ood_test = normalize(x_ood_test)
+# x_id_train, x_id_val, y_id_train, y_id_val = train_test_split(x_id_train, y_id_train, test_size=0.1, random_state=123)
+
+###########################################################################
+###Original CNN-BN：CNN+BN
+input_tensor = Input(shape=(32, 32, 3))
+x = BatchNormalization()(input_tensor)
+x = input_tensor
+
+# unit1
+x = Conv2D(32, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Conv2D(32, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = MaxPooling2D((2, 2))(x)
+
+# unit2
+x = Conv2D(64, (3, 3), padding='same')(x)
+# x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Conv2D(64, (3, 3), padding='same')(x)
+# x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = MaxPooling2D((2, 2))(x)
+
+# unit3
+x = Conv2D(128, kernel_size=(3, 3), padding='same')(x)
+# x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Conv2D(128, kernel_size=(3, 3), padding='same')(x)
+# x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = MaxPooling2D((2, 2))(x)
+
+# unit4
+x = Flatten()(x)
+x = Dense(512)(x)
+# x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Dense(128)(x)
+# x = BatchNormalization()(x)
+x = Activation('relu')(x)
+
+output_tensor = Dense(10, activation='softmax')(x)
+cnn_oracle = Model(inputs=input_tensor, outputs=output_tensor)
+# cnn_oracle.summary()
+
+##########################################################################
+### ODIN ：CNN+BN
+input_ODIN = Input(shape=(32, 32, 3))
+x = BatchNormalization()(input_ODIN)
+
+# unit1
+x = Conv2D(32, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Conv2D(32, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = MaxPooling2D((2, 2))(x)
+
+# unit2
+x = Conv2D(64, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Conv2D(64, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = MaxPooling2D((2, 2))(x)
+
+# unit3
+x = Conv2D(128, kernel_size=(3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Conv2D(128, kernel_size=(3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = MaxPooling2D((2, 2))(x)
+
+# unit4
+x = Flatten()(x)
+x = Dense(512)(x)
+# x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Dense(128)(x)
+# x = BatchNormalization()(x)
+x = Activation('relu')(x)
+
+temperature = tf.Variable(1.0, trainable=True, name='temp')
+logits = Dense(10)(x)
+output_ODIN = Activation('softmax')(Lambda(lambda x: x/temperature)(logits))
+cnn_odin = Model(inputs=input_ODIN, outputs=output_ODIN)
+# cnn_odin.summary()
+
+############################################################################
+### Energy-based：CNN+BN
+input_energy = Input(shape=(32, 32, 3))
+x = BatchNormalization()(input_energy)
+
+# unit1
+x = Conv2D(32, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Conv2D(32, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = MaxPooling2D((2, 2))(x)
+
+# unit2
+x = Conv2D(64, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Conv2D(64, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = MaxPooling2D((2, 2))(x)
+
+# unit3
+x = Conv2D(128, kernel_size=(3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Conv2D(128, kernel_size=(3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = MaxPooling2D((2, 2))(x)
+
+# unit4
+x = Flatten()(x)
+x = Dense(512)(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Dense(128)(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+
+logits = Dense(10)(x)
+temperature = tf.Variable(1.0, trainable=True, name='temp')  
+output_energy = Activation('softmax')(Lambda(lambda x: x/temperature)(logits))
+cnn_energy = Model(inputs=input_energy, outputs=output_energy)
+
+############################################################################
+# Max-Softmax
+def max_softmax_detect(model, x):
+    """ Max-Softmax检测方法 """
+    probs = model.predict(x, verbose=0)
+    return np.max(probs, axis=1)
+
+# ODIN
+def odin_detect(model, x, epsilon=0.001, temperature=1000):
+    """ ODIN检测方法 """
+    x_tensor = tf.convert_to_tensor(x, dtype=tf.float32)
+    with tf.GradientTape() as tape:
+        tape.watch(x_tensor)
+        logits = model(x_tensor, training=False)
+        scaled_probs = tf.nn.softmax(logits/temperature)
+        max_probs = tf.reduce_max(scaled_probs, axis=1)
+    grads = tape.gradient(max_probs, x_tensor)
+    x_perturbed = x_tensor - epsilon * tf.sign(grads)
+    logits_perturbed = model.predict(x_perturbed, verbose=0)
+    probs_perturbed = tf.nn.softmax(logits_perturbed / temperature)
+    return np.max(probs_perturbed.numpy(), axis=1)
+
+def grid_search_odin(model, x_id, x_ood, temps=[1000, 500, 200], epsilons=[0.001, 0.002, 0.005]):
+    """ 寻找最佳温度和扰动幅度组合 """
+    best_auroc = 0
+    best_t = None
+    best_eps = None
+    for T in temps:
+        for eps in epsilons:
+            s_id = odin_detect(model, x_id, epsilon=eps, temperature=T)
+            s_ood = odin_detect(model, x_ood, epsilon=eps, temperature=T)
+            labels = np.concatenate([np.ones_like(s_id), np.zeros_like(s_ood)])
+            scores = np.concatenate([s_id, s_ood])
+            auroc = roc_auc_score(labels, scores)
+            if auroc > best_auroc:
+                best_auroc = auroc
+                best_t = T
+                best_eps = eps
+    return best_t, best_eps
+
+# Energy-based
+def energy_score_detect(model, x, temperature=1.0):
+    """ Energy-Based OOD检测方法 """
+    logits = model.predict(x, verbose=0)
+    # E(x) = -logsumexp(logits/T)
+    energy = -logsumexp(logits / temperature, axis=1)
+    return energy
+
+def grid_search_energy(model, x_id, x_ood, temps=[1.0, 2.0, 5.0]):
+    """ 寻找Energy Score的最佳温度 """
+    best_auroc = 0
+    best_t = None
+    for T in temps:
+        s_id = energy_score_detect(model, x_id, temperature=T)
+        s_ood = energy_score_detect(model, x_ood, temperature=T)
+        labels = np.concatenate([np.ones_like(s_id), np.zeros_like(s_ood)])
+        scores = np.concatenate([-s_id, -s_ood])  
+        auroc = roc_auc_score(labels, scores)
+        if auroc > best_auroc:
+            best_auroc = auroc
+            best_t = T
+    return best_t
+
+############################################################################
+###Training and Evaluation
+cnn_oracle.compile(optimizer=Adam(0.0005), loss='categorical_crossentropy', metrics=['accuracy'])
+cnn_oracle.fit(x_id_train, y_id_train, epochs=50, batch_size=32, shuffle=True, verbose=1, validation_split=0.1)
+cnn_oracle.save('model_oracle/cnn.h5')
+## Max-Softmax
+maxsoft_scores_id = max_softmax_detect(cnn_oracle, x_id_test[:1000])
+maxsoft_scores_ood = max_softmax_detect(cnn_oracle, x_ood_test[:1000])
+maxsoft_labels = np.concatenate([np.ones(1000), np.zeros(1000)])
+maxsoft_scores = np.concatenate([maxsoft_scores_id, maxsoft_scores_ood])
+maxsoft_auroc = roc_auc_score(maxsoft_labels, maxsoft_scores)
+maxsoft_fpr, maxsoft_tpr, _ = roc_curve(maxsoft_labels, maxsoft_scores)
+maxsoft_fpr95 = maxsoft_fpr[np.argmax(maxsoft_tpr >= 0.95)]
+# Odin
+cnn_odin.compile(optimizer=Adam(0.0005), loss='categorical_crossentropy', metrics=['accuracy'])
+cnn_odin.fit(x_id_train, y_id_train, epochs=50, batch_size=32, shuffle=True, verbose=1, validation_split=0.1)
+cnn_odin.save('model_odin/cnn.h5')
+best_T, best_eps = grid_search_odin(cnn_odin,x_id_test[:1000],x_ood_test[:1000],temps=[1000, 500, 200, 100],epsilons=[0.001, 0.002, 0.005, 0.01])
+odin_scores_id = odin_detect(cnn_odin, x_id_test[:1000], epsilon=best_eps, temperature=best_T)
+odin_scores_ood = odin_detect(cnn_odin, x_ood_test[:1000], epsilon=best_eps, temperature=best_T)
+odin_labels = np.concatenate([np.ones(1000), np.zeros(1000)])
+odin_scores = np.concatenate([odin_scores_id, odin_scores_ood])
+odin_auroc = roc_auc_score(odin_labels, odin_scores)
+odin_fpr, odin_tpr, _ = roc_curve(odin_labels, odin_scores)
+odin_fpr95 = odin_fpr[np.argmax(odin_tpr >= 0.95)]
+# Energy-based
+cnn_energy.compile(optimizer=Adam(0.0005), loss='categorical_crossentropy', metrics=['accuracy'])
+cnn_energy.fit(x_id_train, y_id_train, epochs=50, batch_size=32, shuffle=True, verbose=1, validation_split=0.1)
+cnn_energy.save('model_energy/cnn.h5')
+best_T_energy = grid_search_energy(cnn_energy, x_id_test[:1000], x_ood_test[:1000],temps=[2, 1, 0.5, 0.1])
+energy_scores_id = energy_score_detect(cnn_energy, x_id_test[:1000], temperature=best_T_energy)
+energy_scores_ood = energy_score_detect(cnn_energy, x_ood_test[:1000], temperature=best_T_energy)
+energy_labels = np.concatenate([np.ones(1000), np.zeros(1000)])
+energy_scores = np.concatenate([-energy_scores_id, -energy_scores_ood])  
+energy_auroc = roc_auc_score(energy_labels, energy_scores)
+energy_fpr, energy_tpr, _ = roc_curve(energy_labels, energy_scores)
+energy_fpr95 = energy_fpr[np.argmax(energy_tpr >= 0.95)]
+
+###########################################################################
+### Visualization
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+import os
+
+### You should import SimHei yourself, otherwise it will not display properly!
+font_path = '/kaggle/input/simhei/SimHei.ttf'
+if not os.path.exists(font_path):
+    raise FileNotFoundError(f"字体文件不存在于: {font_path}")
+try:
+    font_prop = fm.FontProperties(fname=font_path)
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['font.sans-serif'] = [fm.FontProperties(fname=font_path).get_name()]
+    plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+    # 验证字体是否注册成功
+    print(f"当前使用的字体: {plt.rcParams['font.sans-serif']}")
+except Exception as e:
+    print(f"字体注册失败: {str(e)}")
+plt.rcParams.update({'font.size': 14})  # 增大全局字体大小
+
+plt.figure(figsize=(8, 6))
+plt.plot(maxsoft_fpr, maxsoft_tpr, label=f'Max-Softmax (AUROC = {maxsoft_auroc:.4f}, FPR95 = {maxsoft_fpr95:.4f})')
+plt.plot(odin_fpr, odin_tpr, label=f'ODIN (AUROC = {odin_auroc:.4f}, FPR95 = {odin_fpr95:.4f})')
+plt.plot(energy_fpr, energy_tpr, label=f'Energy (AUROC = {energy_auroc:.4f}, FPR95 = {energy_fpr95:.4f})')
+plt.plot([0, 1], [0, 1], 'k--')
+plt.title('OOD检测方法ROC曲线汇总',fontproperties=font_prop, fontsize=16) 
+plt.xlabel('假正例率',fontproperties=font_prop, fontsize=14)
+plt.ylabel('真正例率',fontproperties=font_prop, fontsize=14)
+plt.legend(prop=font_prop, fontsize=12) 
+plt.tick_params(axis='both', which='major', labelsize=12) 
+plt.grid(False)
+# plt.tight_layout()
+plt.savefig("/kaggle/working/output_AUROC.png")  
+plt.show()
+
+plt.figure(figsize=(8, 6))
+plt.hist(maxsoft_scores_id, bins=50, alpha=0.6, label='ID', color='skyblue', density=True)
+plt.hist(maxsoft_scores_ood, bins=50, alpha=0.6, label='OOD', color='salmon', density=True)
+plt.title('Max-Softmax方法置信分数分布图',fontproperties=font_prop, fontsize=16)  
+plt.xlabel('置信分数',fontproperties=font_prop, fontsize=14)
+plt.ylabel('分布',fontproperties=font_prop, fontsize=14)
+plt.legend(prop=font_prop, fontsize=12)  
+plt.tick_params(axis='both', which='major', labelsize=12) 
+plt.grid(False)
+# plt.tight_layout()
+plt.savefig("/kaggle/working/output_maxsoft.png")  
+plt.show()
+
+plt.figure(figsize=(8, 6))
+plt.hist(odin_scores_id, bins=50, alpha=0.6, label='ID', color='skyblue', density=True)
+plt.hist(odin_scores_ood, bins=50, alpha=0.6, label='OOD', color='salmon', density=True)
+plt.title('ODIN方法置信分数分布图',fontproperties=font_prop, fontsize=16) 
+plt.xlabel('置信分数',fontproperties=font_prop, fontsize=14)
+plt.ylabel('分布',fontproperties=font_prop, fontsize=14)
+plt.legend(prop=font_prop, fontsize=12) 
+plt.tick_params(axis='both', which='major', labelsize=12)  
+plt.grid(False)
+# plt.tight_layout()
+plt.savefig("/kaggle/working/output_ODIN.png")  
+plt.show()
+
+plt.figure(figsize=(8, 6))
+plt.hist(energy_scores_id, bins=50, alpha=0.6, label='ID', color='skyblue', density=True)
+plt.hist(energy_scores_ood, bins=50, alpha=0.6, label='OOD', color='salmon', density=True)
+plt.title('能量分数方法置信分数分布图',fontproperties=font_prop, fontsize=16)  
+plt.xlabel('置信分数',fontproperties=font_prop, fontsize=14)
+plt.ylabel('分布',fontproperties=font_prop, fontsize=14)
+plt.legend(prop=font_prop, fontsize=12)  
+plt.tick_params(axis='both', which='major', labelsize=12)  
+plt.grid(False)
+# plt.tight_layout()
+plt.savefig("/kaggle/working/output_Energy.png") 
+plt.show()
+
+# Max-Softmax
+prec_m, rec_m, _ = precision_recall_curve(maxsoft_labels, maxsoft_scores)
+ap_m = average_precision_score(maxsoft_labels, maxsoft_scores)
+# ODIN
+prec_o, rec_o, _ = precision_recall_curve(odin_labels, odin_scores)
+ap_o = average_precision_score(odin_labels, odin_scores)
+# Energy
+prec_e, rec_e, _ = precision_recall_curve(energy_labels, energy_scores)
+ap_e = average_precision_score(energy_labels, energy_scores)
+plt.figure(figsize=(8, 6))
+plt.plot(rec_m, prec_m, label=f'Max-Softmax (AP = {ap_m:.4f})')
+plt.plot(rec_o, prec_o, label=f'ODIN (AP = {ap_o:.4f})')
+plt.plot(rec_e, prec_e, label=f'Energy (AP = {ap_e:.4f})')
+plt.title('OOD检测方法精确率-召回率曲线汇总',fontproperties=font_prop, fontsize=16)  
+plt.xlabel('召回率',fontproperties=font_prop, fontsize=14)
+plt.ylabel('精确率',fontproperties=font_prop, fontsize=14)
+plt.legend(prop=font_prop, fontsize=12)  # 图例字号放大到12
+plt.tick_params(axis='both', which='major', labelsize=12) 
+plt.grid(False)
+# plt.tight_layout()
+plt.savefig("/kaggle/working/output_PR_edit.png")  
+plt.show()
+
+plt.figure(figsize=(8, 6))
+plt.boxplot([maxsoft_scores_id, maxsoft_scores_ood], labels=['ID', 'OOD'], patch_artist=True,
+            boxprops=dict(facecolor='skyblue'), medianprops=dict(color='black'))
+plt.title('Max-Softmax Score Boxplot')
+plt.ylabel('Confidence Score')
+plt.grid(False)
+plt.tight_layout()
+plt.savefig("/kaggle/working/output_box_maxsoft.png")
+plt.show()
+
+plt.figure(figsize=(8, 6))
+plt.boxplot([odin_scores_id, odin_scores_ood], labels=['ID', 'OOD'], patch_artist=True,
+            boxprops=dict(facecolor='salmon'), medianprops=dict(color='black'))
+plt.title(f'ODIN Score Boxplot (T={best_T}, eps={best_eps})')
+plt.ylabel('Confidence Score')
+plt.grid(False)
+plt.tight_layout()
+plt.savefig("/kaggle/working/output_box_ODIN.png") 
+plt.show()
+
+plt.figure(figsize=(8, 6))
+plt.boxplot([energy_scores_id, energy_scores_ood], labels=['ID', 'OOD'], patch_artist=True,
+            boxprops=dict(facecolor='salmon'), medianprops=dict(color='black'))
+plt.title(f'Energy Score Boxplot (T={best_T}, eps={best_eps})')
+plt.ylabel('Confidence Score')
+plt.grid(False)
+plt.tight_layout()
+plt.savefig("/kaggle/working/output_box_Energy.png") 
+plt.show()
+
+print("Max-Softmax:")
+print(f"  AUROC: {maxsoft_auroc:.4f}")
+print(f"  FPR@95TPR: {maxsoft_fpr95:.4f}")
+print("ODIN:")
+print(f"  AUROC: {odin_auroc:.4f}")
+print(f"  FPR@95TPR: {odin_fpr95:.4f}")
+print("Energy:")
+print(f"  AUROC: {energy_auroc:.4f}")
+print(f"  FPR@95TPR: {energy_fpr95:.4f}")
+
