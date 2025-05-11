@@ -20,7 +20,7 @@ This section contains full R & Python code of two real data analysis cases, whic
 **Note:** Case 2.2 is recommended to be configured for Windows 11 (32 bit) under the implementation of GPU P100 to get desired results.
 
 ## Part 3: Real datasets of covariate shift cases in Part 2
-This section contains two real datasets, which exactly corresponds to Case 2.1 & Case 2.2 mentioned above in Part 2. 
+This section contains datasets with their appendix, which corresponds to Case 2.1 & Case 2.2 mentioned above in Part 2. 
 
 - Dataset 1: Selected cross-sectional data from the MIMIC-III database containing clinical information on 6273 patients with sepsis
 
