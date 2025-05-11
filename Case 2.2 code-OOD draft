@@ -1,0 +1,257 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Apr  8 09:36:27 2025
+@author: Claire Lou
+"""
+
+####如果使用kaggle平台训练，以下是kaggle的路径纠正
+import sys 
+sys.path.append('../input')
+# print(sys.path)
+
+###########################################################################
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, MaxPooling2D, Dense, Flatten, Activation, Lambda
+from tensorflow.keras.models import Model
+from tensorflow.keras.optimizers import Adam
+from sklearn.metrics import roc_auc_score, roc_curve
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+from sklearn.metrics import precision_recall_curve, average_precision_score
+# tf.keras.utils.set_random_seed(123)
+np.random.seed(123)
+
+(x_id_train, y_id_train), (x_id_test, y_id_test) = tf.keras.datasets.cifar10.load_data()
+(x_ood_train, _), (x_ood_test, _) = tf.keras.datasets.cifar100.load_data()
+def normalize(x):
+    x = x.astype('float32') / 255.0
+    mean = np.array([0.4914, 0.4822, 0.4465])
+    std = np.array([0.2470, 0.2435, 0.2616])
+    return (x - mean) / std
+x_id_train, y_id_train = normalize(x_id_train), tf.keras.utils.to_categorical(y_id_train, 10)
+x_id_test = normalize(x_id_test)
+x_ood_test = normalize(x_ood_test)
+# x_id_train, x_id_val, y_id_train, y_id_val = train_test_split(x_id_train, y_id_train, test_size=0.1, random_state=123)
+
+###########################################################################
+### Original CNN-BN：CNN+BN
+input_tensor = Input(shape=(32, 32, 3))
+x = BatchNormalization()(input_tensor)
+
+# unit1
+x = Conv2D(32, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Conv2D(32, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = MaxPooling2D((2, 2))(x)
+
+# unit2
+x = Conv2D(64, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Conv2D(64, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = MaxPooling2D((2, 2))(x)
+
+# unit3
+x = Flatten()(x)
+x = Dense(512)(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Dense(128)(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+
+output_tensor = Dense(11, activation='softmax')(x)
+cnn_oracle = Model(inputs=input_tensor, outputs=output_tensor)
+# cnn_oracle.summary()
+
+##########################################################################
+### ODIN ：CNN+BN
+input_ODIN = Input(shape=(32, 32, 3))
+x = BatchNormalization()(input_ODIN)
+
+# unit1
+x = Conv2D(32, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Conv2D(32, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = MaxPooling2D((2, 2))(x)
+
+# unit2
+x = Conv2D(64, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Conv2D(64, (3, 3), padding='same')(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = MaxPooling2D((2, 2))(x)
+
+# unit3
+x = Flatten()(x)
+x = Dense(512)(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+x = Dense(128)(x)
+x = BatchNormalization()(x)
+x = Activation('relu')(x)
+
+temperature = tf.Variable(1.0, trainable=True, name='temp')
+logits = Dense(11)(x)
+output_ODIN = Activation('softmax')(Lambda(lambda x: x/temperature)(logits))
+cnn_odin = Model(inputs=input_ODIN, outputs=output_ODIN)
+# cnn_odin.summary()
+
+############################################################################
+def max_softmax_detect(model, x):
+    """ Max-Softmax检测方法 """
+    probs = model.predict(x, verbose=0)
+    return np.max(probs, axis=1)
+
+def odin_detect(model, x, epsilon=0.001, temperature=1000):
+    """ ODIN检测方法 """
+    x_tensor = tf.convert_to_tensor(x, dtype=tf.float32)
+    with tf.GradientTape() as tape:
+        tape.watch(x_tensor)
+        logits = model(x_tensor, training=False)
+        scaled_probs = tf.nn.softmax(logits/temperature)
+        max_probs = tf.reduce_max(scaled_probs, axis=1)
+    grads = tape.gradient(max_probs, x_tensor)
+    x_perturbed = x_tensor - epsilon * tf.sign(grads)
+    logits_perturbed = model.predict(x_perturbed, verbose=0)
+    probs_perturbed = tf.nn.softmax(logits_perturbed / temperature)
+    return np.max(probs_perturbed.numpy(), axis=1)
+
+def grid_search_odin(model, x_id, x_ood, temps=[1000, 500, 200], epsilons=[0.001, 0.002, 0.005]):
+    """ 寻找最佳温度和扰动幅度组合 """
+    best_auroc = 0
+    best_t = None
+    best_eps = None
+    for T in temps:
+        for eps in epsilons:
+            s_id = odin_detect(model, x_id, epsilon=eps, temperature=T)
+            s_ood = odin_detect(model, x_ood, epsilon=eps, temperature=T)
+            labels = np.concatenate([np.ones_like(s_id), np.zeros_like(s_ood)])
+            scores = np.concatenate([s_id, s_ood])
+            auroc = roc_auc_score(labels, scores)
+            if auroc > best_auroc:
+                best_auroc = auroc
+                best_t = T
+                best_eps = eps
+    return best_t, best_eps
+
+############################################################################
+### Calculation
+cnn_oracle.compile(optimizer=Adam(0.001), loss='categorical_crossentropy', metrics=['accuracy'])
+cnn_oracle.fit(x_id_train, y_id_train, epochs=50, batch_size=32, shuffle=True, verbose=1, validation_split=0.1)
+## Max-Softmax方法评估
+maxsoft_scores_id = max_softmax_detect(cnn_oracle, x_id_test[:1000])
+maxsoft_scores_ood = max_softmax_detect(cnn_oracle, x_ood_test[:1000])
+maxsoft_labels = np.concatenate([np.ones(1000), np.zeros(1000)])
+maxsoft_scores = np.concatenate([maxsoft_scores_id, maxsoft_scores_ood])
+maxsoft_auroc = roc_auc_score(maxsoft_labels, maxsoft_scores)
+maxsoft_fpr, maxsoft_tpr, _ = roc_curve(maxsoft_labels, maxsoft_scores)
+maxsoft_fpr95 = maxsoft_fpr[np.argmax(maxsoft_tpr >= 0.95)]
+
+# Odin training and evaluation
+cnn_odin.compile(optimizer=Adam(0.001), loss='categorical_crossentropy', metrics=['accuracy'])
+cnn_odin.fit(x_id_train, y_id_train, epochs=50, batch_size=32, shuffle=True, verbose=1, validation_split=0.1)
+best_T, best_eps = grid_search_odin(cnn_odin,x_id_test[:1000],x_ood_test[:1000],temps=[1000, 500, 200, 100],epsilons=[0.001, 0.002, 0.005, 0.01])
+odin_scores_id = odin_detect(cnn_odin, x_id_test[:1000], epsilon=best_eps, temperature=best_T)
+odin_scores_ood = odin_detect(cnn_odin, x_ood_test[:1000], epsilon=best_eps, temperature=best_T)
+odin_labels = np.concatenate([np.ones(1000), np.zeros(1000)])
+odin_scores = np.concatenate([odin_scores_id, odin_scores_ood])
+odin_auroc = roc_auc_score(odin_labels, odin_scores)
+odin_fpr, odin_tpr, _ = roc_curve(odin_labels, odin_scores)
+odin_fpr95 = odin_fpr[np.argmax(odin_tpr >= 0.95)]
+
+###########################################################################
+plt.figure(figsize=(8, 5))
+plt.plot(maxsoft_fpr, maxsoft_tpr, label=f'Max-Softmax (AUROC = {maxsoft_auroc:.4f}, FPR95 = {maxsoft_fpr95:.4f})')
+plt.plot(odin_fpr, odin_tpr, label=f'ODIN (AUROC = {odin_auroc:.4f}, FPR95 = {odin_fpr95:.4f})')
+plt.plot([0, 1], [0, 1], 'k--')
+plt.title('ROC Curve for OOD Detection')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.savefig("/kaggle/working/output_AUROC.png")
+plt.show()
+
+plt.figure(figsize=(8, 5))
+plt.hist(maxsoft_scores_id, bins=50, alpha=0.6, label='ID', color='skyblue', density=True)
+plt.hist(maxsoft_scores_ood, bins=50, alpha=0.6, label='OOD', color='salmon', density=True)
+plt.title('Max-Softmax Confidence Score Distribution')
+plt.xlabel('Confidence Score')
+plt.ylabel('Density')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.savefig("/kaggle/working/output_ScoreMS.png")
+plt.show()
+
+plt.figure(figsize=(8, 5))
+plt.hist(odin_scores_id, bins=50, alpha=0.6, label='ID', color='skyblue', density=True)
+plt.hist(odin_scores_ood, bins=50, alpha=0.6, label='OOD', color='salmon', density=True)
+plt.title(f'ODIN Confidence Score Distribution (T={best_T}, eps={best_eps})')
+plt.xlabel('Confidence Score')
+plt.ylabel('Density')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.savefig("/kaggle/working/output_ScoreODIN.png")
+plt.show()
+
+# Max-Softmax
+prec_m, rec_m, _ = precision_recall_curve(maxsoft_labels, maxsoft_scores)
+ap_m = average_precision_score(maxsoft_labels, maxsoft_scores)
+# ODIN
+prec_o, rec_o, _ = precision_recall_curve(odin_labels, odin_scores)
+ap_o = average_precision_score(odin_labels, odin_scores)
+plt.figure(figsize=(8, 5))
+plt.plot(rec_m, prec_m, label=f'Max-Softmax (AP = {ap_m:.4f})')
+plt.plot(rec_o, prec_o, label=f'ODIN (AP = {ap_o:.4f})')
+plt.title('Precision-Recall Curve')
+plt.xlabel('Recall')
+plt.ylabel('Precision')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.savefig("/kaggle/working/output_PR.png")
+plt.show()
+
+plt.figure(figsize=(8, 5))
+plt.boxplot([maxsoft_scores_id, maxsoft_scores_ood], labels=['ID', 'OOD'], patch_artist=True,
+            boxprops=dict(facecolor='skyblue'), medianprops=dict(color='black'))
+plt.title('Max-Softmax Score Boxplot')
+plt.ylabel('Confidence Score')
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+plt.figure(figsize=(8, 5))
+plt.boxplot([odin_scores_id, odin_scores_ood], labels=['ID', 'OOD'], patch_artist=True,
+            boxprops=dict(facecolor='salmon'), medianprops=dict(color='black'))
+plt.title(f'ODIN Score Boxplot (T={best_T}, eps={best_eps})')
+plt.ylabel('Confidence Score')
+plt.grid(True)
+plt.tight_layout()
+plt.savefig("/kaggle/working/output_boxplot.png")
+plt.show()
+
+print("Max-Softmax:")
+print(f"  AUROC: {maxsoft_auroc:.4f}")
+
+
+
+print(f"  FPR@95TPR: {maxsoft_fpr95:.4f}")
+print("ODIN:")
+print(f"  AUROC: {odin_auroc:.4f}")
+print(f"  FPR@95TPR: {odin_fpr95:.4f}")
