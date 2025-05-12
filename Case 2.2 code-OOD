@@ -48,29 +48,29 @@ x = MaxPooling2D((2, 2))(x)
 
 # unit2
 x = Conv2D(64, (3, 3), padding='same')(x)
-# x = BatchNormalization()(x)
+x = BatchNormalization()(x)
 x = Activation('relu')(x)
 x = Conv2D(64, (3, 3), padding='same')(x)
-# x = BatchNormalization()(x)
+x = BatchNormalization()(x)
 x = Activation('relu')(x)
 x = MaxPooling2D((2, 2))(x)
 
 # unit3
 x = Conv2D(128, kernel_size=(3, 3), padding='same')(x)
-# x = BatchNormalization()(x)
+x = BatchNormalization()(x)
 x = Activation('relu')(x)
 x = Conv2D(128, kernel_size=(3, 3), padding='same')(x)
-# x = BatchNormalization()(x)
+x = BatchNormalization()(x)
 x = Activation('relu')(x)
 x = MaxPooling2D((2, 2))(x)
 
 # unit4
 x = Flatten()(x)
 x = Dense(512)(x)
-# x = BatchNormalization()(x)
+x = BatchNormalization()(x)
 x = Activation('relu')(x)
 x = Dense(128)(x)
-# x = BatchNormalization()(x)
+x = BatchNormalization()(x)
 x = Activation('relu')(x)
 
 output_tensor = Dense(10, activation='softmax')(x)
@@ -112,10 +112,10 @@ x = MaxPooling2D((2, 2))(x)
 # unit4
 x = Flatten()(x)
 x = Dense(512)(x)
-# x = BatchNormalization()(x)
+x = BatchNormalization()(x)
 x = Activation('relu')(x)
 x = Dense(128)(x)
-# x = BatchNormalization()(x)
+x = BatchNormalization()(x)
 x = Activation('relu')(x)
 
 temperature = tf.Variable(1.0, trainable=True, name='temp')
